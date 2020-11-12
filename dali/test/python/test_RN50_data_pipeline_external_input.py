@@ -24,6 +24,9 @@ from test_utils import get_dali_extra_path
 
 from os import listdir, path
 import numpy as np
+from PIL import Image
+# from multiprocessing import Process, Pool
+
 
 
 class DataSet(object):
@@ -66,7 +69,7 @@ class DataSet(object):
         return self.files_map[indx]
 
 
-class DataLoader(object):
+class BaseDataLoader(object):
 
     DATASET_CLASS = DataSet
 
@@ -77,6 +80,9 @@ class DataLoader(object):
 
     def get_dataset(self):
         return self.DATASET_CLASS(self.dataset_dir)
+
+
+class DataLoader(BaseDataLoader):
 
     def read_img(self, file_name):
         with open(file_name, 'rb') as f:
@@ -92,11 +98,38 @@ class DataLoader(object):
             yield imgs, labels
 
 
-class CommonPipeline(Pipeline):
+class PILImageLoader(DataLoader):
+
+    def read_img(self, file_name):
+        img = Image.open(file_name)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        return np.array(img)
+
+
+# class ParallelDataLoader(PILImageLoader):
+
+#     DATASET_CLASS = DataSet
+
+#     def __init__(self, dataset_dir, batch_size, workers_no):
+#         super().__init__(dataset_dir, batch_size)
+#         self.workers_no = workers_no
+#         self.pool = Pool(workers_no) if __name__ == '__main__' else None
+
+#     def get_iter(self):
+#         sampled = 0
+#         ds_len = len(self.ds)
+#         while sampled < ds_len:
+#             files = [self.ds[i % ds_len] for i in range(sampled, sampled + self.batch_size)]
+#             imgs = self.pool.map(self.read_img,  [file_path for file_path, label in files])
+#             labels = [np.array([label]) for file_path, label in files]
+#             yield imgs, labels
+
+
+class BaseCommonPipeline(Pipeline):
     def __init__(self, data_paths, num_shards, batch_size, num_threads, device_id, prefetch, fp16, random_shuffle, nhwc,
                  dont_use_mmap, decoder_type, decoder_cache_params, reader_queue_depth, shard_id):
-        super(CommonPipeline, self).__init__(batch_size, num_threads, device_id, random_shuffle, prefetch_queue_depth=prefetch)
-        self.decode_gpu = ops.ImageDecoder(device = "mixed", output_type = types.RGB)
+        super().__init__(batch_size, num_threads, device_id, random_shuffle, prefetch_queue_depth=prefetch)
         self.res = ops.RandomResizedCrop(device="gpu", size =(224,224))
         layout = types.NHWC
         out_type = types.FLOAT
@@ -108,17 +141,26 @@ class CommonPipeline(Pipeline):
                                             std=[255, 255, 255])
         self.coin = ops.CoinFlip(probability=0.5)
 
-    def base_define_graph(self, inputs, labels):
+    def base_define_graph(self, images, labels):
         rng = self.coin()
-        images = self.decode_gpu(inputs)
         images = self.res(images)
-        output = self.cmnp(images.gpu(), mirror=rng)
-        return (output, labels)
+        output = self.cmnp(images, mirror=rng)
+        return output, labels
 
 
-class FileReadPipeline(CommonPipeline):
+class DALIDecodePipeline(BaseCommonPipeline):
     def __init__(self, **kwargs):
-        super(FileReadPipeline, self).__init__(**kwargs)
+        super().__init__(**kwargs)
+        self.decode_gpu = ops.ImageDecoder(device = "mixed", output_type = types.RGB)
+
+    def base_define_graph(self, inputs, labels):
+        images = self.decode_gpu(inputs)
+        return super().base_define_graph(images, labels)
+
+
+class FileReadPipeline(DALIDecodePipeline):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         cache_enabled = kwargs['decoder_cache_params']['cache_enabled']
         self.input = ops.FileReader(file_root = kwargs['data_paths'][0],
                                     shard_id = kwargs['shard_id'],
@@ -134,11 +176,17 @@ class FileReadPipeline(CommonPipeline):
         return self.base_define_graph(images, labels)
 
 
-class ExternalInputPipeline(CommonPipeline):
+class DataLoaderMixIn(object):
+
+    DATALOADER_CLASS = DataLoader
+
     def __init__(self, **kwargs):
-        super(ExternalInputPipeline, self).__init__(**kwargs)
-        self.loader = DataLoader(kwargs['data_paths'][0], kwargs['batch_size'])
+        super().__init__(**kwargs)
+        self.loader = self.get_data_loader(**kwargs)
         self.input = ops.ExternalSource(self.loader.get_iter(), num_outputs=2)
+
+    def get_data_loader(self, **kwargs):
+        return self.DATALOADER_CLASS(kwargs['data_paths'][0], kwargs['batch_size'])
 
     def define_graph(self):
         images, labels = self.input()
@@ -148,7 +196,32 @@ class ExternalInputPipeline(CommonPipeline):
         return len(self.loader.ds)
 
 
+class ExternalInputPipeline(DataLoaderMixIn, DALIDecodePipeline):
+    pass
+
+
+class ExternalPythonDecodePipeline(DataLoaderMixIn, BaseCommonPipeline):
+    DATALOADER_CLASS = PILImageLoader
+
+    def define_graph(self):
+        images, labels = self.input()
+        return self.base_define_graph(images.gpu(), labels)
+
+
+# class ExternalPythonDecodePipelineParallel(DataLoaderMixIn, BaseCommonPipeline):
+#     DATALOADER_CLASS = ParallelDataLoader
+
+#     def get_data_loader(self, **kwargs):
+#         return self.DATALOADER_CLASS(kwargs['data_paths'][0], kwargs['batch_size'], kwargs['num_threads'])
+
+#     def define_graph(self):
+#         images, labels = self.input()
+#         return self.base_define_graph(images.gpu(), labels)
+
+
 test_data = {
+    # ExternalPythonDecodePipelineParallel: [["/home/workspace/ktokarski/imgnet/"]],
+    ExternalPythonDecodePipeline: [["/home/workspace/ktokarski/imgnet/"]],
     ExternalInputPipeline: [["/home/workspace/ktokarski/imgnet/"]],
     FileReadPipeline: [["/home/workspace/ktokarski/imgnet/"]],
 }
