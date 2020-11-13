@@ -1,6 +1,8 @@
 # custom wrappers around ops
 from nvidia.dali import backend as _b
 import inspect
+from multiprocessing import Process, Pool, cpu_count
+
 
 def _get_batch_shape(data):
     if isinstance(data, (list, tuple, _b.TensorListCPU, _b.TensorListGPU)):
@@ -61,25 +63,54 @@ class _CycleGenFunc():
             self.it = iter(self.source())
             return next(self.it)
 
+class Wrap(object):
+
+    def __init__(self, current_iter, callback):
+        self.current_iter = current_iter
+        self.callback = callback
+
+    def __call__(self, batch_offset):
+        return self.callback(self.current_iter, batch_offset)
+
+
+def parallel_lol(p, callback, current_iter, batch_size):
+    return [e for l in p.map(Wrap(current_iter, callback), range(batch_size // 4)) for e in l]
+
 class _ExternalSourceGroup(object):
-    def __init__(self, callback, is_multioutput, instances = [], cuda_stream = None, use_copy_kernel = None):
+    def __init__(self, callback, is_multioutput, instances = [], cuda_stream = None, use_copy_kernel = None, batch_size=None):
+        # print("How many times am I hapenning, hmm?")
         self.instances = list(instances)  # we need a copy!
         self.is_multioutput = is_multioutput
         self.callback = callback
         self._cuda_stream = cuda_stream
+        self._batch_size = batch_size
         self.use_copy_kernel = use_copy_kernel
         if callback is not None:
-            if callback.__code__.co_argcount not in [0, 1]:
-                raise TypeError("External source callback must be a callable with 0 or 1 argument")
-            self.accepts_iter_num = (callback.__code__.co_argcount == 1)
+            if callback.__code__.co_argcount not in [0, 1, 2]:
+                raise TypeError("External source callback must be a callable with 0 - 2 arguments")
+            self.accepts_iter_num = (callback.__code__.co_argcount > 0)
         else:
             self.accepts_iter_num = None
+        if not batch_size:
+            self.pool = None
+        else:
+            n_cores = cpu_count()
+            print("n_cores: {}".format(n_cores))
+            self.pool = Pool(n_cores)
 
     def append(self, instance):
         self.instances.append(instance)
 
     def call_and_feed(self, pipeline, current_iter):
-        if self.accepts_iter_num:
+        # print('ddddd', current_iter)
+        if self._batch_size:
+            # print("oooooo {} {}".format(current_iter, self._batch_size))
+            callback_out = parallel_lol(self.pool, self.callback, current_iter, self._batch_size)
+            if self.is_multioutput:
+                callback_out = [list(l) for l in zip(*callback_out)]
+                # print(len(callback_out))
+
+        elif self.accepts_iter_num:
             callback_out = self.callback(current_iter)
         else:
             callback_out = self.callback()
@@ -254,13 +285,14 @@ Keyword Args
 """
 
     def __init__(self, source = None, num_outputs = None, *, cycle = None, layout = None, name = None, device = "cpu",
-                 cuda_stream = None, use_copy_kernel = None, **kwargs):
+                 cuda_stream = None, use_copy_kernel = None, batch_size=None, **kwargs):
         self._schema = _b.GetSchema("_ExternalSource")
         self._spec = _b.OpSpec("_ExternalSource")
         self._device = device
         self._layout = layout
         self._cuda_stream = cuda_stream
         self._use_copy_kernel = use_copy_kernel
+        self._batch_size = batch_size
 
         import nvidia.dali.ops
         kwargs, self._call_args = nvidia.dali.ops._separate_kwargs(kwargs)
@@ -341,7 +373,7 @@ Keyword Args
         if self._num_outputs is not None:
             outputs = []
             kwargs = {}
-            group = _ExternalSourceGroup(callback, True, cuda_stream=cuda_stream, use_copy_kernel=use_copy_kernel)
+            group = _ExternalSourceGroup(callback, True, cuda_stream=cuda_stream, use_copy_kernel=use_copy_kernel, batch_size=self._batch_size)
             for i in range(self._num_outputs):
                 op_instance = _OperatorInstance([], self, **kwargs)
                 op_instance._callback = callback

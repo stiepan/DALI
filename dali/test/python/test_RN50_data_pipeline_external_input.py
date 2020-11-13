@@ -25,8 +25,10 @@ from test_utils import get_dali_extra_path
 from os import listdir, path
 import numpy as np
 from PIL import Image
-# from multiprocessing import Process, Pool
 
+
+import concurrent.futures
+import urllib.request
 
 
 class DataSet(object):
@@ -107,6 +109,33 @@ class PILImageLoader(DataLoader):
         return np.array(img)
 
 
+class DataLoaderParallel(BaseDataLoader):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+    def read_img(self, p):
+        file_name, label = p
+        img = Image.open(file_name)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        return np.array(img), np.array([label])
+
+    def get_sample(self, iter_no, batch_offset):
+        ds_len = len(self.ds)
+        i = iter_no * self.batch_size + 2 * batch_offset
+        return list(self.executor.map(self.read_img, [self.ds[(i + j) % ds_len] for j in range(4)]))
+
+
+dlp = None
+def get_sample(iter_no, batch_offset):
+    global dlp
+    if dlp is None:
+        dlp = DataLoaderParallel("/home/workspace/ktokarski/imgnet/", BATCH_SIZE)
+    return dlp.get_sample(iter_no, batch_offset)
+
+
 # class ParallelDataLoader(PILImageLoader):
 
 #     DATASET_CLASS = DataSet
@@ -183,7 +212,7 @@ class DataLoaderMixIn(object):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.loader = self.get_data_loader(**kwargs)
-        self.input = ops.ExternalSource(self.loader.get_iter(), num_outputs=2)
+        self.input = ops.ExternalSource(self.loader.get_iter, num_outputs=2)
 
     def get_data_loader(self, **kwargs):
         return self.DATALOADER_CLASS(kwargs['data_paths'][0], kwargs['batch_size'])
@@ -208,19 +237,27 @@ class ExternalPythonDecodePipeline(DataLoaderMixIn, BaseCommonPipeline):
         return self.base_define_graph(images.gpu(), labels)
 
 
-# class ExternalPythonDecodePipelineParallel(DataLoaderMixIn, BaseCommonPipeline):
-#     DATALOADER_CLASS = ParallelDataLoader
+class ExternalPythonDecodePipelineParallel(BaseCommonPipeline):
+    DATALOADER_CLASS = DataLoader
 
-#     def get_data_loader(self, **kwargs):
-#         return self.DATALOADER_CLASS(kwargs['data_paths'][0], kwargs['batch_size'], kwargs['num_threads'])
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.loader = self.get_data_loader(**kwargs)
+        self.input = ops.ExternalSource(get_sample, num_outputs=2, batch_size=kwargs['batch_size'])
 
-#     def define_graph(self):
-#         images, labels = self.input()
-#         return self.base_define_graph(images.gpu(), labels)
+    def get_data_loader(self, **kwargs):
+        return self.DATALOADER_CLASS(kwargs['data_paths'][0], kwargs['batch_size'])
+
+    def define_graph(self):
+        images, labels = self.input()
+        return self.base_define_graph(images.gpu(), labels)
+
+    def epoch_size(self, *args, **kwargs):
+        return len(self.loader.ds)
 
 
 test_data = {
-    # ExternalPythonDecodePipelineParallel: [["/home/workspace/ktokarski/imgnet/"]],
+    ExternalPythonDecodePipelineParallel: [["/home/workspace/ktokarski/imgnet/"]],
     ExternalPythonDecodePipeline: [["/home/workspace/ktokarski/imgnet/"]],
     ExternalInputPipeline: [["/home/workspace/ktokarski/imgnet/"]],
     FileReadPipeline: [["/home/workspace/ktokarski/imgnet/"]],
