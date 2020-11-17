@@ -74,7 +74,16 @@ class Wrap(object):
 
 
 def parallel_lol(p, callback, current_iter, batch_size):
-    return [e for l in p.map(Wrap(current_iter, callback), range(batch_size // 4)) for e in l]
+    return [e for l in p.map(Wrap(current_iter, callback), range(batch_size // 32)) for e in l]
+
+
+class DamtaSemmmt(object):
+
+    class Count(object):
+        co_argcount = 1
+
+    def __init__(self):
+        self.__code__ = self.Count()
 
 class _ExternalSourceGroup(object):
     def __init__(self, callback, is_multioutput, instances = [], cuda_stream = None, use_copy_kernel = None, batch_size=None):
@@ -96,7 +105,7 @@ class _ExternalSourceGroup(object):
         else:
             n_cores = cpu_count()
             print("n_cores: {}".format(n_cores))
-            self.pool = Pool(n_cores)
+            self.pool = Pool(n_cores - 1)
 
     def append(self, instance):
         self.instances.append(instance)
@@ -130,6 +139,8 @@ def _is_generator_function(x):
     if inspect.isgeneratorfunction(x):
         return True
     if x is None or inspect.isfunction(x):
+        return False
+    if isinstance(x, DamtaSemmmt):
         return False
     call = getattr(x, "__call__", None)
     return _is_generator_function(call)

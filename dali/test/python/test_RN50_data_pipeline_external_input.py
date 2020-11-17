@@ -16,6 +16,7 @@ from nvidia.dali.pipeline import Pipeline
 import nvidia.dali.ops as ops
 import nvidia.dali.types as types
 import nvidia.dali.tfrecord as tfrec
+import nvidia.dali.external_source as ext_source
 import os
 import glob
 import argparse
@@ -25,6 +26,7 @@ from test_utils import get_dali_extra_path
 from os import listdir, path
 import numpy as np
 from PIL import Image
+import cv2
 
 
 import concurrent.futures
@@ -93,8 +95,9 @@ class DataLoader(BaseDataLoader):
     def get_iter(self):
         sampled = 0
         ds_len = len(self.ds)
-        while sampled < ds_len:
+        while True:
             files = [self.ds[i % ds_len] for i in range(sampled, sampled + self.batch_size)]
+            sampled += self.batch_size
             imgs = [self.read_img(file_path) for file_path, label in files]
             labels = [np.array([label]) for file_path, label in files]
             yield imgs, labels
@@ -109,31 +112,62 @@ class PILImageLoader(DataLoader):
         return np.array(img)
 
 
-class DataLoaderParallel(BaseDataLoader):
+# class DataLoaderParallel(BaseDataLoader):
+
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+#         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+#     def read_img(self, p):
+#         file_name, label = p
+#         img = Image.open(file_name)
+#         if img.mode != "RGB":
+#             img = img.convert("RGB")
+#         return np.array(img), np.array([label])
+
+#     def get_sample(self, iter_no, batch_offset):
+#         ds_len = len(self.ds)
+#         i = iter_no * self.batch_size + 2 * batch_offset
+#         return list(self.executor.map(self.read_img, [self.ds[(i + j) % ds_len] for j in range(2)]))
+
+
+class DataLoaderParallelOpenCv(BaseDataLoader):
 
     def __init__(self, *args, **kwargs):
+        print("dddddddd")
         super().__init__(*args, **kwargs)
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
     def read_img(self, p):
         file_name, label = p
-        img = Image.open(file_name)
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-        return np.array(img), np.array([label])
+        img = cv2.imread(file_name)
+        return img, np.array([label])
 
     def get_sample(self, iter_no, batch_offset):
         ds_len = len(self.ds)
         i = iter_no * self.batch_size + 2 * batch_offset
-        return list(self.executor.map(self.read_img, [self.ds[(i + j) % ds_len] for j in range(4)]))
+        return list(map(self.read_img, [self.ds[(i + j) % ds_len] for j in range(32)]))
 
 
 dlp = None
-def get_sample(iter_no, batch_offset):
-    global dlp
-    if dlp is None:
-        dlp = DataLoaderParallel("/home/workspace/ktokarski/imgnet/", BATCH_SIZE)
-    return dlp.get_sample(iter_no, batch_offset)
+# def get_sample(iter_no, batch_offset):
+#     global dlp
+#     if dlp is None:
+#         dlp = DataLoaderParallel("/home/ktokarski/imagenet_k/subset_train/", BATCH_SIZE)
+#     return dlp.get_sample(iter_no, batch_offset)
+
+
+def xdd(inh=ext_source.DamtaSemmmt):
+    class DamtaSemt(inh):
+
+        def __init__(self):
+            super().__init__()
+            self.dlp = DataLoaderParallelOpenCv("/home/ktokarski/imagenet_k/subset_train/", BATCH_SIZE)
+
+        def __call__(self, iter_no, batch_offset):
+            return self.dlp.get_sample(iter_no, batch_offset)
+
+    return DamtaSemt()
+
 
 
 # class ParallelDataLoader(PILImageLoader):
@@ -180,11 +214,11 @@ class BaseCommonPipeline(Pipeline):
 class DALIDecodePipeline(BaseCommonPipeline):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.decode_gpu = ops.ImageDecoder(device = "mixed", output_type = types.RGB)
+        self.decode_gpu = ops.ImageDecoder(device="cpu", output_type=types.RGB)
 
     def base_define_graph(self, inputs, labels):
         images = self.decode_gpu(inputs)
-        return super().base_define_graph(images, labels)
+        return super().base_define_graph(images.gpu(), labels)
 
 
 class FileReadPipeline(DALIDecodePipeline):
@@ -237,13 +271,32 @@ class ExternalPythonDecodePipeline(DataLoaderMixIn, BaseCommonPipeline):
         return self.base_define_graph(images.gpu(), labels)
 
 
-class ExternalPythonDecodePipelineParallel(BaseCommonPipeline):
+# class ExternalPythonDecodePipelineParallel(BaseCommonPipeline):
+#     DATALOADER_CLASS = DataLoader
+
+#     def __init__(self, **kwargs):
+#         super().__init__(**kwargs)
+#         self.loader = self.get_data_loader(**kwargs)
+#         self.input = ops.ExternalSource(get_sample, num_outputs=2, batch_size=kwargs['batch_size'])
+
+#     def get_data_loader(self, **kwargs):
+#         return self.DATALOADER_CLASS(kwargs['data_paths'][0], kwargs['batch_size'])
+
+#     def define_graph(self):
+#         images, labels = self.input()
+#         return self.base_define_graph(images.gpu(), labels)
+
+#     def epoch_size(self, *args, **kwargs):
+#         return len(self.loader.ds)
+
+
+class ExternalOpenCVDecodePipelineParallel(BaseCommonPipeline):
     DATALOADER_CLASS = DataLoader
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.loader = self.get_data_loader(**kwargs)
-        self.input = ops.ExternalSource(get_sample, num_outputs=2, batch_size=kwargs['batch_size'])
+        self.input = ops.ExternalSource(xdd(), num_outputs=2, batch_size=kwargs['batch_size'])
 
     def get_data_loader(self, **kwargs):
         return self.DATALOADER_CLASS(kwargs['data_paths'][0], kwargs['batch_size'])
@@ -257,10 +310,11 @@ class ExternalPythonDecodePipelineParallel(BaseCommonPipeline):
 
 
 test_data = {
-    ExternalPythonDecodePipelineParallel: [["/home/workspace/ktokarski/imgnet/"]],
-    ExternalPythonDecodePipeline: [["/home/workspace/ktokarski/imgnet/"]],
-    ExternalInputPipeline: [["/home/workspace/ktokarski/imgnet/"]],
-    FileReadPipeline: [["/home/workspace/ktokarski/imgnet/"]],
+    # ExternalPythonDecodePipeline: [["/home/ktokarski/imagenet_k/subset_train/"]],
+    ExternalOpenCVDecodePipelineParallel: [["/home/ktokarski/imagenet_k/subset_train/"]],
+    # ExternalPythonDecodePipelineParallel: [["/home/ktokarski/imagenet_k/subset_train/"]],
+    ExternalInputPipeline: [["/home/ktokarski/imagenet_k/subset_train/"]],
+    FileReadPipeline: [["/home/ktokarski/imagenet_k/subset_train/"]],
 }
 
 data_root = get_dali_extra_path()
