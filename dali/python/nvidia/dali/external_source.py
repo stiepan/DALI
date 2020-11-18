@@ -1,6 +1,7 @@
 # custom wrappers around ops
 from nvidia.dali import backend as _b
 import inspect
+import multiprocessing
 from multiprocessing import Process, Pool, cpu_count
 
 
@@ -63,20 +64,6 @@ class _CycleGenFunc():
             self.it = iter(self.source())
             return next(self.it)
 
-class Wrap(object):
-
-    def __init__(self, current_iter, callback):
-        self.current_iter = current_iter
-        self.callback = callback
-
-    def __call__(self, batch_offset):
-        return self.callback(self.current_iter, batch_offset)
-
-
-def parallel_lol(p, callback, current_iter, batch_size):
-    return [e for l in p.map(Wrap(current_iter, callback), range(batch_size // 32)) for e in l]
-
-
 class DamtaSemmmt(object):
 
     class Count(object):
@@ -84,6 +71,59 @@ class DamtaSemmmt(object):
 
     def __init__(self):
         self.__code__ = self.Count()
+
+
+def worker(proc_id, callback, task_queue, res_queue):
+    print("Worker {} starts".format(proc_id))
+    while True:
+        idx = task_queue.get()
+        # print("Worker {} got task {}".format(proc_id, idx))
+        if (idx < 0):
+            break
+        res = callback(idx)
+        # print("Worker {} puts task {}".format(proc_id, idx))
+        res_queue.put((idx, res))
+        # print("Worker {} put task {}".format(proc_id, idx))
+
+
+class WorkersPool(object):
+
+    def __init__(self, callback, workers_no=None):
+        mp = multiprocessing.get_context("fork")
+        self.round_counter = 0
+        self.workers_no = workers_no if workers_no is not None else multiprocessing.cpu_count()
+        self.processes = []
+        self.task_queues = []
+        self.res_queue = mp.Queue()
+        for i in range(self.workers_no):
+            task_queue = mp.Queue()
+            process = mp.Process(
+                target=worker,
+                args=(i, callback, task_queue, self.res_queue),
+            )
+            process.start()
+            self.task_queues.append(task_queue)
+            self.processes.append(process)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        for p in self.processes:
+            p.join()
+
+    def next_worker(self):
+        counter = self.round_counter
+        self.round_counter = (self.round_counter + 1) % self.workers_no
+        return counter
+
+    def process_batch(self, tasks):
+        split_tasks = [(task_id, self.next_worker()) for task_id in tasks]
+        for task_id, worker_id in split_tasks:
+            self.task_queues[worker_id].put(task_id)
+        done_tasks = dict(self.res_queue.get() for _ in range(len(split_tasks)))
+        return [done_tasks[task_id] for task_id, _ in split_tasks]
+
 
 class _ExternalSourceGroup(object):
     def __init__(self, callback, is_multioutput, instances = [], cuda_stream = None, use_copy_kernel = None, batch_size=None):
@@ -103,9 +143,7 @@ class _ExternalSourceGroup(object):
         if not batch_size:
             self.pool = None
         else:
-            n_cores = cpu_count()
-            print("n_cores: {}".format(n_cores))
-            self.pool = Pool(n_cores - 1)
+            self.pool = WorkersPool(callback)
 
     def append(self, instance):
         self.instances.append(instance)
@@ -113,8 +151,8 @@ class _ExternalSourceGroup(object):
     def call_and_feed(self, pipeline, current_iter):
         # print('ddddd', current_iter)
         if self._batch_size:
-            # print("oooooo {} {}".format(current_iter, self._batch_size))
-            callback_out = parallel_lol(self.pool, self.callback, current_iter, self._batch_size)
+            batch_stride = current_iter * self._batch_size
+            callback_out = self.pool.process_batch(range(batch_stride, batch_stride + self._batch_size))
             if self.is_multioutput:
                 callback_out = [list(l) for l in zip(*callback_out)]
                 # print(len(callback_out))

@@ -133,6 +133,8 @@ class PILImageLoader(DataLoader):
 
 class DataLoaderParallelOpenCv(BaseDataLoader):
 
+    # MINI_BATCH = 1
+
     def __init__(self, *args, **kwargs):
         print("dddddddd")
         super().__init__(*args, **kwargs)
@@ -142,10 +144,9 @@ class DataLoaderParallelOpenCv(BaseDataLoader):
         img = cv2.imread(file_name)
         return img, np.array([label])
 
-    def get_sample(self, iter_no, batch_offset):
+    def get_sample(self, i):
         ds_len = len(self.ds)
-        i = iter_no * self.batch_size + 2 * batch_offset
-        return list(map(self.read_img, [self.ds[(i + j) % ds_len] for j in range(32)]))
+        return self.read_img(self.ds[i % ds_len])
 
 
 dlp = None
@@ -163,8 +164,8 @@ def xdd(inh=ext_source.DamtaSemmmt):
             super().__init__()
             self.dlp = DataLoaderParallelOpenCv("/home/ktokarski/imagenet_k/subset_train/", BATCH_SIZE)
 
-        def __call__(self, iter_no, batch_offset):
-            return self.dlp.get_sample(iter_no, batch_offset)
+        def __call__(self, idx):
+            return self.dlp.get_sample(idx)
 
     return DamtaSemt()
 
