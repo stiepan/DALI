@@ -3,6 +3,7 @@ from nvidia.dali import backend as _b
 import inspect
 import multiprocessing
 from multiprocessing import Process, Pool, cpu_count
+from nvidia.dali.pool import WorkersPool
 
 
 def _get_batch_shape(data):
@@ -73,56 +74,18 @@ class DamtaSemmmt(object):
         self.__code__ = self.Count()
 
 
-def worker(proc_id, callback, task_queue, res_queue):
-    print("Worker {} starts".format(proc_id))
-    while True:
-        idx = task_queue.get()
-        # print("Worker {} got task {}".format(proc_id, idx))
-        if (idx < 0):
-            break
-        res = callback(idx)
-        # print("Worker {} puts task {}".format(proc_id, idx))
-        res_queue.put((idx, res))
-        # print("Worker {} put task {}".format(proc_id, idx))
+# class ProccessGroup(object):
 
+#     def __init__(self, context):
+#         self.context = context
+#         self.processes = []
 
-class WorkersPool(object):
+#     def add_process(self, target, *args):
+#         process = self.context.Process(target=target, args=args)
+#         self.processes.append(process)
 
-    def __init__(self, callback, workers_no=None):
-        mp = multiprocessing.get_context("fork")
-        self.round_counter = 0
-        self.workers_no = workers_no if workers_no is not None else multiprocessing.cpu_count()
-        self.processes = []
-        self.task_queues = []
-        self.res_queue = mp.Queue()
-        for i in range(self.workers_no):
-            task_queue = mp.Queue()
-            process = mp.Process(
-                target=worker,
-                args=(i, callback, task_queue, self.res_queue),
-            )
-            process.start()
-            self.task_queues.append(task_queue)
-            self.processes.append(process)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, exc_traceback):
-        for p in self.processes:
-            p.join()
-
-    def next_worker(self):
-        counter = self.round_counter
-        self.round_counter = (self.round_counter + 1) % self.workers_no
-        return counter
-
-    def process_batch(self, tasks):
-        split_tasks = [(task_id, self.next_worker()) for task_id in tasks]
-        for task_id, worker_id in split_tasks:
-            self.task_queues[worker_id].put(task_id)
-        done_tasks = dict(self.res_queue.get() for _ in range(len(split_tasks)))
-        return [done_tasks[task_id] for task_id, _ in split_tasks]
+#     def join(self):
+#         sentiels = [process.sentiel for process in self.processes]
 
 
 class _ExternalSourceGroup(object):
