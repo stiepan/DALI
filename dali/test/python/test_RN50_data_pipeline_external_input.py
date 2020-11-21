@@ -307,7 +307,7 @@ class ExternalOpenCVDecodePipelineParallel(BaseCommonPipeline):
         super().__init__(**kwargs)
         self.loader = self.get_data_loader(**kwargs)
         damta_set = DamtaSemt()
-        self.input = ops.ExternalSource(damta_set, num_outputs=2, batch_size=kwargs['batch_size'])
+        self.input = ops.ExternalSource(damta_set, num_outputs=2, batch_size=kwargs['batch_size'], no_copy=True)
 
     def get_data_loader(self, **kwargs):
         return self.DATALOADER_CLASS(kwargs['data_paths'][0], kwargs['batch_size'])
@@ -325,7 +325,7 @@ if __name__ == "__main__":
         ExternalOpenCVDecodePipelineParallel: [["/home/ktokarski/imagenet_k/subset_train/"]],
         # ExternalPythonDecodePipelineParallel: [["/home/ktokarski/imagenet_k/subset_train/"]],
         # ExternalInputPipeline: [["/home/ktokarski/imagenet_k/subset_train/"]],
-        # FileReadPipeline: [["/home/ktokarski/imagenet_k/subset_train/"]],
+        FileReadPipeline: [["/home/ktokarski/imagenet_k/subset_train/"]],
     }
 
     data_root = get_dali_extra_path()
@@ -338,7 +338,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Test nvJPEG based RN50 augmentation pipeline with different datasets')
     parser.add_argument('-g', '--gpus', default=1, type=int, metavar='N',
                         help='number of GPUs run in parallel by this test (default: 1)')
-    parser.add_argument('-b', '--batch', default=512, type=int, metavar='N',
+    parser.add_argument('-b', '--batch', default=1024, type=int, metavar='N',
                         help='batch size (default: 1024)')
     parser.add_argument('-p', '--print-freq', default=10, type=int,
                         metavar='N', help='print frequency (default: 10)')
@@ -500,13 +500,13 @@ if __name__ == "__main__":
                                             data_set_len, pipe_name.__name__))
             print(data_set)
             end = time.time()
-            for i in range(1):  # for i in range(args.epochs):
+            for i in range(args.epochs):
                 if i == 0:
                     print("Warm up")
                 else:
                     print("Test run " + str(i))
                 data_time = AverageMeter()
-                for j in range(iters // 2):
+                for j in range(iters):
                     for pipe in pipes:
                         pipe.run()
                     data_time.update(time.time() - end)

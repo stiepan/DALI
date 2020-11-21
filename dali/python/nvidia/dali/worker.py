@@ -2,78 +2,33 @@ import multiprocessing as mp
 from multiprocessing import shared_memory
 import numpy as np
 import weakref
-
-
-class SharedNP(object):
-
-    def __init__(self, shm_name, dtype, shape):
-        self.shm_name = shm_name
-        self.dtype = dtype
-        self.shape = shape
-
-
-def serialize_np(a):
-    try:
-        shm = shared_memory.SharedMemory(create=True, size=a.nbytes)
-        b = np.ndarray(a.shape, dtype=a.dtype, buffer=shm.buf)
-        b[:] = a[:]
-        return shm, SharedNP(shm.name, a.dtype, a.shape)
-    except:
-        shm.close()
-        shm.unlink()
-        raise
-
-
-def _serialize(res, shms):
-    try:
-        if isinstance(res, np.ndarray):
-            if np.product(res.shape) < 100:
-                return res
-            shm, serialized = serialize_np(res)
-            shms.append(shm)
-            return serialized
-        if isinstance(res, list) or isinstance(res, tuple):
-            return type(res)(_serialize(r, shms) for r in res)
-        assert(False)
-    except:
-        for shm in shms:
-            shm.close()
-            shm.unlink()
-        shms.clear()
-
-
-def serialize(res):
-    shms = []
-    return shms, _serialize(res, shms)
-
-
-def unlink_shm(shm):
-    # print("Freeing memory {}".format(shm.name))
-    shm.close()
-    shm.unlink()
-
-
-def deserialize(obj):
-    if isinstance(obj, SharedNP):
-        shm = shared_memory.SharedMemory(name=obj.shm_name)
-        a = np.ndarray(obj.shape, dtype=obj.dtype, buffer=shm.buf)
-        weakref.finalize(a, unlink_shm, shm)
-        return a
-    if isinstance(obj, list) or isinstance(obj, tuple):
-        return type(obj)(deserialize(r) for r in obj)
-    return obj
+from nvidia.dali.memory_pool import MemBatchProducer, MemBatchSerialized
 
 
 def worker(proc_id, callback, task_queue, res_queue):
+    batches = None
     try:
+        depth = 3
+        capacity = 1 * 1024 * 1024
+        batches = [MemBatchProducer("batch_{}_{}".format(proc_id, i), capacity) for i in range(depth)]
+        batch_i = depth
         print("Worker {} starts".format(proc_id))
         while True:
-            idx = task_queue.get()
-            if (idx < 0):
+            batch_i = (batch_i + 1) % depth
+            batch_mem = batches[batch_i]
+            batch_mem.reset_samples()
+            idxs = task_queue.get()
+            assert(isinstance(idxs, list))
+            if (idxs == []):
                 break
-            res = callback(idx)
-            _, serialized = serialize(res)
-            res_queue.put((idx, serialized))
+            batch_data = [(idx, callback(idx)) for idx in idxs]
+            batch_mem.fill_batch(batch_data)
+            res_queue.put(MemBatchSerialized.from_producer_batch(batch_mem))
     except KeyboardInterrupt:
         print("KI {}".format(proc_id))
+    finally:
+        if batches is not None:
+            for batch in batches:
+                batch.free()
+
 
