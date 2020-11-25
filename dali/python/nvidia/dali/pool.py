@@ -1,16 +1,16 @@
 import multiprocessing
 from nvidia.dali.worker import worker
-from nvidia.dali.memory_pool import MemBatchConsumerMgr
+from nvidia.dali.memory_pool import SharedBatchPool, SharedBatchBuffer, SharedBatchConsumer
 
 
 class WorkersPool(object):
 
-    def __init__(self, callback, workers_no=None):
+    def __init__(self, callback, workers_no=None, queue_batch_depth=3, initial_batch_capacity=1024 * 1024):
         method = "fork"
         print("context for method {}".format(method))
         mp = multiprocessing.get_context(method)
-        self.mem_pool_mgr = MemBatchConsumerMgr()
-        # self.round_counter = 0
+        self.mem_pool = SharedBatchPool(queue_batch_depth, initial_batch_capacity)
+        self.batch_consumer = SharedBatchConsumer(self.mem_pool)
         self.workers_no = workers_no if workers_no is not None else multiprocessing.cpu_count()
         self.processes = []
         self.task_queues = []
@@ -51,10 +51,18 @@ class WorkersPool(object):
                 self.task_queues[worker_id].put(tasks[queued_no:queued_no + chunk_size])
                 queued_no += chunk_size
             queued_workers = self.workers_no
+        # handle memory allocation requests
+        mem_requests = [self.res_queue.get() for _ in range(queued_workers)]
+        req_space = sum(size for (_, size) in mem_requests)
+        mem_batch = self.mem_pool.next_batch()
+        mem_batch.assure_room_for(req_space)
+        for (worker_id, size) in mem_requests:
+            batch_buffer = SharedBatchBuffer.from_shared_batch_mem(mem_batch, size)
+            self.task_queues[worker_id].put(batch_buffer)
         done_tasks = {}
         for _ in range(queued_workers):
-            worker_batch_serialized = self.res_queue.get()
-            worker_batch = self.mem_pool_mgr.load_batch(worker_batch_serialized)
+            batch_chunk = self.res_queue.get()
+            worker_batch = self.batch_consumer.deserialize_batch(batch_chunk)
             done_tasks.update(worker_batch)
         return [done_tasks[task_id] for task_id in tasks]
         # return [(np.frombuffer(buf, dt, np.product(shape)).reshape(shape), np.frombuffer(buf1, dt1, np.product(shape1)).reshape(shape1)) for (buf, shape, dt), (buf1, shape1, dt1) in buffers]
