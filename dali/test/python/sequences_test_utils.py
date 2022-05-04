@@ -336,7 +336,7 @@ def vid_source(batch_size, num_batches, num_frames, width, height, seq_layout):
     return batches
 
 
-def video_suite_helper(ops_test_cases, test_channel_first=True, expand_channels=False):
+def video_suite_helper(ops_test_cases, test_channel_first=True, expand_channels=False, rng=None):
     """
     Generates suite of video test cases for a sequence processing operator.
     The operator should meet the SequenceOperator assumptions, i.e.
@@ -364,7 +364,7 @@ def video_suite_helper(ops_test_cases, test_channel_first=True, expand_channels=
         If True, for the "FCHW" layout the first two (and not just one) dims are expanded, and "CFHW" layout is tested.
         Requires `test_channel_first` to be True.
     """
-    rng = random.Random(42)
+    rng = rng or random.Random(42)
     expandable_extents = "FC" if expand_channels else "F"
     layouts = ["FHWC"]
     if not test_channel_first:
