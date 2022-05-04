@@ -28,6 +28,17 @@ data_root = get_dali_extra_path()
 vid_file = os.path.join(data_root, 'db', 'video',
                         'sintel', 'sintel_trailer-720p.mp4')
 
+
+class SampleDesc:
+
+    def __init__(self, rng : random.Random, frame_idx : int, sample_idx : int, batch_idx : int, sample : np.ndarray):
+        self.rng = rng
+        self.frame_idx = frame_idx
+        self.sample_idx = sample_idx
+        self.batch_idx = batch_idx
+        self.sample = sample
+
+
 class ParamsProviderBase:
     """
     Computes data to be passed as argument inputs in sequence processing tests, the `compute_params` params
@@ -35,6 +46,7 @@ class ParamsProviderBase:
     The `expand_params` should return corressponding unfolded/expanded arguments to be used in the
     baseline pipeline.
     """
+
     def __init__(self):
         self.input_data = None
         self.input_layout = None
@@ -67,9 +79,9 @@ class ParamsProvider(ParamsProviderBase):
 
     def __init__(self, input_params):
         """
-        `input_params` : List[Tuple[str, rng -> np.array, bool]]
+        `input_params` : List[Tuple[str, SampleDesc -> np.array, bool]]
         List describing tensor input arguments of the form: [(tensor_arg_name, single_arg_cb, is_per_frame)])]
-        The `single_arg_cb` should be a function that takes Python's random number generator and returns
+        The `single_arg_cb` should be a function that takes SampleDesc and returns
         an argument for a single sample or frame, depending on the `is_per_frame` flag."""
         super().__init__()
         self.input_params = input_params
@@ -181,7 +193,8 @@ def _test_seq_input(device, num_iters, expandable_extents, operator_fn, fixed_pa
 
     max_batch_size = max(len(batch) for batch in input_data)
 
-    params_provider = input_params if isinstance(input_params, ParamsProviderBase) else ParamsProvider(input_params)
+    params_provider = input_params if isinstance(
+        input_params, ParamsProviderBase) else ParamsProvider(input_params)
     params_provider.setup(input_data, input_layout, fixed_params, rng)
     per_sample_params_input, per_frame_params_input = params_provider.compute_params()
     seq_pipe = pipeline(input_data=input_data, input_layout=input_layout,
@@ -193,7 +206,8 @@ def _test_seq_input(device, num_iters, expandable_extents, operator_fn, fixed_pa
     num_expand = get_layout_prefix_len(input_layout, expandable_extents)
     unfolded_input = unfold_batches(input_data, num_expand)
     unfolded_input_layout = input_layout[num_expand:]
-    params_provider.setup_expand(num_expand, unfolded_input, unfolded_input_layout)
+    params_provider.setup_expand(
+        num_expand, unfolded_input, unfolded_input_layout)
     expanded_params_data = params_provider.expand_params()
     max_uf_batch_size = max(len(batch) for batch in unfolded_input)
     baseline_pipe = pipeline(input_data=unfolded_input,
@@ -216,26 +230,36 @@ def _test_seq_input(device, num_iters, expandable_extents, operator_fn, fixed_pa
 
 
 def get_input_arg_per_sample(input_data, param_cb, rng):
-    return [[param_cb(rng) for _ in batch] for batch in input_data]
+    return [[
+        param_cb(SampleDesc(rng, None, sample_idx, batch_idx, sample))
+        for sample_idx, sample in enumerate(batch)]
+        for batch_idx, batch in enumerate(input_data)]
 
 
-def get_input_arg_per_frame(input_data, input_layout, param_cb, rng):
-    def arg_for_sample(num_frames):
-        if rng.randint(1, 4) == 1:
-            return np.array([param_cb(rng)])
-        return np.array([param_cb(rng) for _ in range(num_frames)])
+def get_input_arg_per_frame(input_data, input_layout, param_cb, rng, check_broadcasting):
     frame_idx = input_layout.find("F")
-    return [[arg_for_sample(sample.shape[frame_idx])
-             for sample in batch] for batch in input_data]
+
+    def arg_for_sample(sample_idx, batch_idx, sample):
+        if check_broadcasting and rng.randint(1, 4) == 1:
+            return np.array([param_cb(SampleDesc(rng, 0, sample_idx, batch_idx, sample))])
+        num_frames = sample.shape[frame_idx]
+        return np.array([
+            param_cb(SampleDesc(rng, frame_idx, sample_idx, batch_idx, sample))
+            for frame_idx in range(num_frames)])
+
+    return [[
+        arg_for_sample(sample_idx, batch_idx, sample)
+        for sample_idx, sample in enumerate(batch)]
+        for batch_idx, batch in enumerate(input_data)]
 
 
-def get_input_params_data(input_data, input_layout, input_params, rng):
+def get_input_params_data(input_data, input_layout, input_params, rng, check_broadcasting=True):
     per_sample_args = [
         (param_name, get_input_arg_per_sample(input_data, param_cb, rng))
         for param_name, param_cb, is_per_frame in input_params if not is_per_frame]
     per_frame_args = [
         (param_name, get_input_arg_per_frame(
-            input_data, input_layout, param_cb, rng))
+            input_data, input_layout, param_cb, rng, check_broadcasting))
         for param_name, param_cb, is_per_frame in input_params if is_per_frame]
 
     return per_sample_args, per_frame_args
@@ -327,7 +351,7 @@ def video_suite_helper(ops_test_cases, test_channel_first=True, expand_channels=
 
     For testing operator with different input than the video, consider using `sequence_suite_helper` directly.
     ----------
-    `ops_test_cases` : List[Tuple[Operator, Dict[str, Any], ParamProviderBase|List[Tuple[str, rng -> np.array, bool]]]]
+    `ops_test_cases` : List[Tuple[Operator, Dict[str, Any], ParamProviderBase|List[Tuple[str, SampleDesc -> np.array, bool]]]]
         List of operators and their parameters that should be tested.
         Each element is expected to be a triple of the form:
         [(fn.operator, {fixed_param_name: fixed_param_value}, [(tensor_arg_name, single_arg_cb, is_per_frame)])]

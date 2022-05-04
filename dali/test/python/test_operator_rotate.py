@@ -293,14 +293,14 @@ class RotatePerFrameParamsProvider(ParamsProvider):
 
 
 def test_video():
-    def small_angle(rng):
-      return np.array(rng.uniform(-44., 44.), dtype=np.float32)
+    def small_angle(sample_desc):
+      return np.array(sample_desc.rng.uniform(-44., 44.), dtype=np.float32)
 
-    def random_angle(rng):
-      return np.array(rng.uniform(-180., 180.), dtype=np.float32)
+    def random_angle(sample_desc):
+      return np.array(sample_desc.rng.uniform(-180., 180.), dtype=np.float32)
 
-    def random_output(rng):
-      return np.array([rng.randint(300, 400), rng.randint(300, 400)])
+    def random_output(sample_desc):
+      return np.array([sample_desc.rng.randint(300, 400), rng.randint(300, 400)])
 
     video_test_cases = [
         (dali.fn.rotate, {'angle': 45.}, []),
@@ -335,11 +335,11 @@ def test_3d_sequence():
 
   input_cases = [(input_layout, [get_random_batch() for _ in range(num_batches)])]
 
-  def random_angle(rng):
-    return np.array(rng.uniform(-180., 180.), dtype=np.float32)
+  def random_angle(sample_desc):
+    return np.array(sample_desc.rng.uniform(-180., 180.), dtype=np.float32)
 
-  def random_axis(rng):
-    return np.array([rng.uniform(-1, 1) for _ in range(3)], dtype=np.float32)
+  def random_axis(sample_desc):
+    return np.array([sample_desc.rng.uniform(-1, 1) for _ in range(3)], dtype=np.float32)
 
   test_cases = [
     (dali.fn.rotate, {'angle': 45., 'axis': np.array([1, 0, 0], dtype=np.float32)}, []),

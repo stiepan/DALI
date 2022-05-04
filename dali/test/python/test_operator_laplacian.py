@@ -633,20 +633,20 @@ def test_fail_laplacian():
 
 
 def test_per_frame():
-    def window_size(rng):
-        return np.array(2 * rng.randint(1, 15) + 1, dtype=np.int32)
+    def window_size(sample_desc):
+        return np.array(2 * sample_desc.rng.randint(1, 15) + 1, dtype=np.int32)
 
-    def per_axis_window_size(rng):
-        return np.array([window_size(rng) for _ in range(2)])
+    def per_axis_window_size(sample_desc):
+        return np.array([window_size(sample_desc) for _ in range(2)])
 
-    def per_axis_smoothing_size(rng):
-        return np.array([2 * rng.randint(0, 15) + 1 for _ in range(2)], dtype=np.int32)
+    def per_axis_smoothing_size(sample_desc):
+        return np.array([2 * sample_desc.rng.randint(0, 15) + 1 for _ in range(2)], dtype=np.int32)
 
-    def per_axis_scale(rng):
-        def scale(rng):
-            k = 2 * rng.randint(0, 15) + 1
+    def per_axis_scale(sample_desc):
+        def scale(sample_desc):
+            k = 2 * sample_desc.rng.randint(0, 15) + 1
             return np.array(2. ** -k, dtype=np.float32)
-        return np.array([scale(rng) for _ in range(2)])
+        return np.array([scale(sample_desc) for _ in range(2)])
 
     video_test_cases = [
         (fn.laplacian, {}, []),
