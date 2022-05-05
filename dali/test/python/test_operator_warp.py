@@ -21,7 +21,7 @@ import numpy as np
 import math
 import os
 import cv2
-from sequences_test_utils import video_suite_helper, SampleDesc
+from sequences_test_utils import video_suite_helper, SampleDesc, ArgCb
 from test_utils import compare_pipelines
 import random
 
@@ -304,10 +304,21 @@ def test_video():
         m = np.matmul(m, transformation(sample_desc))
     return m[0:2,:]
 
+  def output_size(sample_desc):
+    _, h, w, _ = sample_desc.sample.shape  # assuming FHWC layout
+    rng = sample_desc.rng
+    return np.array([h * rng.uniform(0.5, 2), w * rng.uniform(0.5, 2)], dtype=np.float32)
+
   video_test_cases = [
-      (fn.warp_affine, {'matrix': random_rotate_mx(SampleDesc(rng, 0, 0, 0, None))[0:2,:]}, []),
-      (fn.warp_affine, {}, [("matrix", random_mx, False)]),
-      (fn.warp_affine, {}, [("matrix", random_mx, True)]),
+      (fn.warp_affine, {"matrix": random_rotate_mx(SampleDesc(rng, 0, 0, 0, None))[0:2,:]}, []),
+      (fn.warp_affine, {}, [ArgCb("matrix", random_mx, False)]),
+      (fn.warp_affine, {}, [ArgCb("matrix", random_mx, True)]),
+      (fn.warp_affine, {}, [ArgCb("matrix", random_mx, False), ArgCb("size", output_size, False)]),
+      (fn.warp_affine, {}, [ArgCb("matrix", random_mx, True), ArgCb("size", output_size, False)]),
+      (fn.warp_affine, {}, [ArgCb(1, random_mx, True, dest_device="cpu")]),
+      (fn.warp_affine, {}, [ArgCb(1, random_mx, True, dest_device="gpu")], ["gpu"]),
+      (fn.warp_affine, {}, [ArgCb(1, random_mx, False, dest_device="cpu")]),
+      (fn.warp_affine, {}, [ArgCb(1, random_mx, False, dest_device="gpu")], ["gpu"]),
   ]
 
   yield from video_suite_helper(video_test_cases, test_channel_first=False, expand_channels=False, rng=rng)
