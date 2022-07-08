@@ -33,9 +33,11 @@ namespace dali {
 // TODO(klecki): float16 support - it's not easily compatible with float window,
 // need to introduce some cast in between and expose it in the kernels
 #define LAPLACIAN_GPU_SUPPORTED_TYPES \
-  (uint8_t, int8_t, uint16_t, int16_t, uint32_t, int32_t, uint64_t, int64_t, float)
+  (float)
+  // (uint8_t, int8_t, uint16_t, int16_t, uint32_t, int32_t, uint64_t, int64_t, float)
 
-#define LAPLACIAN_SUPPORTED_AXES (1, 2, 3)
+// #define LAPLACIAN_SUPPORTED_AXES (1, 2, 3)
+#define LAPLACIAN_SUPPORTED_AXES (2)
 
 
 template <typename Backend>
