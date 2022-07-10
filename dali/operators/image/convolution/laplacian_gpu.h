@@ -22,6 +22,7 @@
 #include "dali/core/static_switch.h"
 #include "dali/kernels/imgproc/convolution/laplacian_gpu.cuh"
 #include "dali/kernels/imgproc/convolution/laplacian_windows.h"
+#include "dali/kernels/imgproc/convolution/convolution2d/convolution_gpu.h"
 #include "dali/kernels/kernel_manager.h"
 #include "dali/operators/image/convolution/laplacian.h"
 #include "dali/pipeline/data/views.h"
@@ -146,6 +147,93 @@ class LaplacianOpGpu : public OpImplBase<GPUBackend> {
   std::array<std::array<TensorListView<StorageCPU, const float, 1>, axes>, axes> windows_;
 };
 
+template <typename Out, typename In, int axes, bool has_channels, bool is_sequence>
+class FusedLaplacianOpGpu : public OpImplBase<GPUBackend> {
+ public:
+  using Kernel = kernels::Convolution2dGpu<Out, In, float, axes, has_channels, is_sequence>;
+  static constexpr int ndim = Kernel::ndim;
+
+  /**
+   * @param spec  Pointer to a persistent OpSpec object,
+   *              which is guaranteed to be alive for the entire lifetime of this object
+   */
+  explicit FusedLaplacianOpGpu(const OpSpec* spec, const DimDesc& dim_desc)
+      : spec_{*spec}, args{*spec}, dim_desc_{dim_desc} {
+    kmgr_.Resize<Kernel>(1);
+    windows_cpu_.set_type(DALIDataType::DALI_FLOAT);
+    windows_gpu_.set_type(DALIDataType::DALI_FLOAT);
+  }
+
+  bool SetupImpl(std::vector<OutputDesc>& output_desc, const workspace_t<GPUBackend>& ws) override {
+    ctx_.gpu.stream = ws.stream();
+
+    const auto& input = ws.template Input<GPUBackend>(0);
+    auto processed_shape = input.shape();
+    int nsamples = processed_shape.num_samples();
+    // If we are sequence-like, make sure that all sequence elements are compressed to first dim
+    if (is_sequence) {
+      processed_shape = collapse_dims(processed_shape, {{0, dim_desc_.usable_axes_start}});
+    }
+
+    output_desc.resize(1);
+    output_desc[0].type = type2id<Out>::value;
+    // Shape is set by ProcessOutputDesc
+    window_sizes_ = uniform_list_shape(nsamples, TensorShape<2>{3, 3});
+    if (!already_filled_in_){
+      windows_cpu_.Resize(window_sizes_);
+      auto win_view = view<float, 2>(windows_cpu_);
+      for(int sample_idx = 0; sample_idx < nsamples; sample_idx++) {
+        for (int i = 0; i < 9; i++) {
+          win_view[sample_idx].data[i] = window_[i];
+        }
+      }
+      windows_gpu_.set_order(ws.stream());
+      windows_gpu_.Copy(windows_cpu_, ws.stream());
+      already_filled_in_ = true;
+    }
+
+    auto& req = kmgr_.Setup<Kernel>(0, ctx_, processed_shape.to_static<ndim>(), window_sizes_);
+    return true;
+  }
+
+  void RunImpl(workspace_t<GPUBackend>& ws) override {
+    const auto& input = ws.template Input<GPUBackend>(0);
+    auto& output = ws.template Output<GPUBackend>(0);
+    output.SetLayout(input.GetLayout());
+
+    auto processed_shape = input.shape();
+    // If we are sequence-like, make sure that all sequence elements are compressed to first dim
+    if (is_sequence) {
+      processed_shape = collapse_dims(processed_shape, {{0, dim_desc_.usable_axes_start}});
+    }
+
+    auto static_shape = processed_shape.to_static<ndim>();
+    auto in_view_dyn = view<const In>(input);
+    auto out_view_dyn = view<Out>(output);
+    auto in_view = reshape<ndim>(in_view_dyn, static_shape);
+    auto out_view = reshape<ndim>(out_view_dyn, static_shape);
+    auto win_view = view<float, 2>(windows_gpu_);
+
+    kmgr_.Run<Kernel>(0, ctx_, out_view, in_view, win_view);
+  }
+
+ private:
+  const OpSpec& spec_;
+  LaplacianArgs<axes> args;
+  DimDesc dim_desc_;
+
+  kernels::KernelManager kmgr_;
+  kernels::KernelContext ctx_;
+
+  std::vector<float> window_ = {0.5, 0., 0.5, 0., -2., 0., 0.5, 0., 0.5};
+  std::vector<float> host_windows_;
+  TensorListShape<2> window_sizes_;
+  TensorVector<CPUBackend> windows_cpu_;
+  TensorList<GPUBackend> windows_gpu_;
+  bool already_filled_in_ = false;
+};
+
+
 /**
  * @brief Obtain an instance of LaplacianOpGpu for given `Out` and `In` types
  * and dimensionality provided by runtime DimDesc.
@@ -159,8 +247,14 @@ op_impl_uptr GetLaplacianGpuImpl(const OpSpec* spec, const DimDesc& dim_desc) {
   VALUE_SWITCH(dim_desc.usable_axes_count, Axes, LAPLACIAN_SUPPORTED_AXES, (
     BOOL_SWITCH(dim_desc.is_channel_last(), HasChannels, (
       BOOL_SWITCH(dim_desc.is_sequence(), IsSeq, (
-        using LaplacianImpl = LaplacianOpGpu<Out, In, Axes, HasChannels, IsSeq>;
-        result.reset(new LaplacianImpl(spec, dim_desc))
+        bool use_fused = !spec->HasTensorArgument(windowSizeArgName) && !spec->HasTensorArgument(smoothingSizeArgName);
+        if (use_fused) {
+          using FusedLaplacianImpl = FusedLaplacianOpGpu<Out, In, Axes, HasChannels, IsSeq>;
+          result.reset(new FusedLaplacianImpl(spec, dim_desc));
+        } else {
+          using LaplacianImpl = LaplacianOpGpu<Out, In, Axes, HasChannels, IsSeq>;
+          result.reset(new LaplacianImpl(spec, dim_desc));
+        }
       ));  // NOLINT
     ));  // NOLINT
   ), DALI_FAIL("Axis count out of supported range."));  // NOLINT
