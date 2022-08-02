@@ -22,7 +22,7 @@
 #include "dali/core/static_switch.h"
 #include "dali/kernels/imgproc/convolution/laplacian_gpu.cuh"
 #include "dali/kernels/imgproc/convolution/laplacian_windows.h"
-#include "dali/kernels/imgproc/convolution/convolution2d/convolution_gpu.h"
+#include "dali/kernels/imgproc/convolution/convolution2d/simple_convolution_gpu.cuh"
 #include "dali/kernels/kernel_manager.h"
 #include "dali/operators/image/convolution/laplacian.h"
 #include "dali/pipeline/data/views.h"
