@@ -29,21 +29,24 @@
 namespace dali {
 namespace kernels {
 
-constexpr int R = 3;
-constexpr int S = 3;
 
-__constant__ float filter[R * S] = {0.5, 0., 0.5, 0., -2., 0., 0.5, 0., 0.5};
+constexpr int MAX_KERNEL_VOLUME = 256;
+
+struct FilterDesc {
+  float data[MAX_KERNEL_VOLUME];
+  int r, s;
+};
 
 template <typename Out, typename In>
 struct SampleDesc {
   const In* in;
   Out* out;
-  int h, w, c;
-  int vol;
+  int h, w, c, vol, r, s;
 };
 
 template <typename Out, typename In>
-__host__ __device__ void position(int idx, const SampleDesc<Out, In>& desc, int& h, int& w, int& c) {
+__host__ __device__ void position(int idx, const SampleDesc<Out, In>& desc, int& h, int& w,
+                                  int& c) {
   c = idx % desc.c;
   idx /= desc.c;
   w = idx % desc.w;
@@ -52,8 +55,8 @@ __host__ __device__ void position(int idx, const SampleDesc<Out, In>& desc, int&
 }
 
 template <typename In>
-__host__ __device__ float get_value(const In* in, int in_h, int in_w, int c, int H, int W,
-                                    int WC, int C) {
+__host__ __device__ float get_value(const In* in, int in_h, int in_w, int c, int H, int W, int WC,
+                                    int C) {
   if (in_h < 0 || in_w < 0 || in_h >= H || in_w >= W) {
     return 0;
   }
@@ -62,12 +65,18 @@ __host__ __device__ float get_value(const In* in, int in_h, int in_w, int c, int
 }
 
 template <typename Out, typename In>
-__global__ void conv2d(const SampleDesc<Out, In>* descs, int num_samples) {
+__global__ void conv2d(const SampleDesc<Out, In>* descs, const FilterDesc filter_desc, int num_samples) {
   int sample_idx = blockIdx.z;
   auto sample_desc = descs[sample_idx];
+  // const float* const __restrict__ filter = filter_desc.data;
+  const float* filter = filter_desc.data;
+  // for (int i = threadIdx.x; i < sample_desc.filter_vol; i += blockDim.x) {
+  //   filter[i] = global_filter[i];
+  // }
+  // __syncthreads();
   int grid_size = gridDim.x * blockDim.x;
-  int rr = R / 2;
-  int rs = S / 2;
+  int rr = sample_desc.r / 2;
+  int rs = sample_desc.s / 2;
   int wc = sample_desc.w * sample_desc.c;
   auto* out = sample_desc.out;
   auto* in = sample_desc.in;
@@ -104,8 +113,7 @@ struct Convolution2dGpu<Out, In, W, 2, has_channels, is_sequence> {
   using Intermediate = decltype(std::declval<W>() * std::declval<In>());
   static_assert(std::is_same<Intermediate, W>::value);
 
-  KernelRequirements Setup(KernelContext& ctx, const TensorListShape<ndim>& in_shape,
-                           const TensorListShape<2>& window_sizes) {
+  KernelRequirements Setup(KernelContext& ctx, const TensorListShape<ndim>& in_shape) {
     KernelRequirements req;
     ScratchpadEstimator se;
     se.add<mm::memory_kind::device, SampleDesc<Out, In>>(in_shape.num_samples());
@@ -116,7 +124,7 @@ struct Convolution2dGpu<Out, In, W, 2, has_channels, is_sequence> {
 
   void Run(KernelContext& ctx, const TensorListView<StorageGPU, Out, ndim>& out,
            const TensorListView<StorageGPU, const In, ndim>& in,
-           const TensorListView<StorageGPU, const W, 2>& windows) {
+           const TensorView<StorageCPU, const W, 2>& filter) {
     unsigned int num_samples = in.shape.num_samples();
 
     samples_desc_.clear();
@@ -129,21 +137,26 @@ struct Convolution2dGpu<Out, In, W, 2, has_channels, is_sequence> {
       int h = in_out_shape[0], w = in_out_shape[1], c = in_out_shape[2];
       int vol = volume(in_out_shape);
       max_vol = std::max(max_vol, vol);
-      SampleDesc<Out, In> desc = {in.tensor_data(sample_idx), out.tensor_data(sample_idx), h, w, c, vol};
+      SampleDesc<Out, In> desc = {
+          in.tensor_data(sample_idx), out.tensor_data(sample_idx), h, w, c, vol, filter.shape[0], filter.shape[1]};
       samples_desc_.push_back(desc);
     }
-
-    SampleDesc<Out, In>* descs_dev = ctx.scratchpad->ToGPU(ctx.gpu.stream, make_span(samples_desc_));
+    filter_desc_.r = filter.shape[0];
+    filter_desc_.s = filter.shape[1];
+    std::memcpy(filter_desc_.data, filter.data, volume(filter.shape) * sizeof(float));
+    SampleDesc<Out, In>* descs_dev =
+        ctx.scratchpad->ToGPU(ctx.gpu.stream, make_span(samples_desc_));
     unsigned int block_size = 128;
     unsigned int num_blocks = ((max_vol + block_size - 1) / block_size);
     dim3 grid = {num_blocks, 1, num_samples};
     dim3 block = {block_size, 1, 1};
-    conv2d<<<grid, block, 0, ctx.gpu.stream>>>(descs_dev, num_samples);
+    conv2d<<<grid, block, 0, ctx.gpu.stream>>>(descs_dev, filter_desc_, num_samples);
     CUDA_CALL(cudaGetLastError());
   }
 
  private:
   std::vector<SampleDesc<Out, In>> samples_desc_;
+  FilterDesc filter_desc_;
 };
 
 }  // namespace kernels

@@ -160,8 +160,7 @@ class FusedLaplacianOpGpu : public OpImplBase<GPUBackend> {
   explicit FusedLaplacianOpGpu(const OpSpec* spec, const DimDesc& dim_desc)
       : spec_{*spec}, args{*spec}, dim_desc_{dim_desc} {
     kmgr_.Resize<Kernel>(1);
-    windows_cpu_.set_type(DALIDataType::DALI_FLOAT);
-    windows_gpu_.set_type(DALIDataType::DALI_FLOAT);
+    filter_.set_type(DALIDataType::DALI_FLOAT);
   }
 
   bool SetupImpl(std::vector<OutputDesc>& output_desc, const workspace_t<GPUBackend>& ws) override {
@@ -178,21 +177,13 @@ class FusedLaplacianOpGpu : public OpImplBase<GPUBackend> {
     output_desc.resize(1);
     output_desc[0].type = type2id<Out>::value;
     // Shape is set by ProcessOutputDesc
-    window_sizes_ = uniform_list_shape(nsamples, TensorShape<2>{3, 3});
-    if (!already_filled_in_){
-      windows_cpu_.Resize(window_sizes_);
-      auto win_view = view<float, 2>(windows_cpu_);
-      for(int sample_idx = 0; sample_idx < nsamples; sample_idx++) {
-        for (int i = 0; i < 9; i++) {
-          win_view[sample_idx].data[i] = window_[i];
-        }
-      }
-      windows_gpu_.set_order(ws.stream());
-      windows_gpu_.Copy(windows_cpu_, ws.stream());
-      already_filled_in_ = true;
+    filter_.Resize(TensorShape<2>{3, 3});
+    auto filter_view = view<float, 2>(filter_);
+    for (int i = 0; i < 9; i++) {
+      filter_view.data[i] = window_[i];
     }
 
-    auto& req = kmgr_.Setup<Kernel>(0, ctx_, processed_shape.to_static<ndim>(), window_sizes_);
+    auto& req = kmgr_.Setup<Kernel>(0, ctx_, processed_shape.to_static<ndim>());
     return true;
   }
 
@@ -212,9 +203,9 @@ class FusedLaplacianOpGpu : public OpImplBase<GPUBackend> {
     auto out_view_dyn = view<Out>(output);
     auto in_view = reshape<ndim>(in_view_dyn, static_shape);
     auto out_view = reshape<ndim>(out_view_dyn, static_shape);
-    auto win_view = view<float, 2>(windows_gpu_);
+    auto filter_view = view<float, 2>(filter_);
 
-    kmgr_.Run<Kernel>(0, ctx_, out_view, in_view, win_view);
+    kmgr_.Run<Kernel>(0, ctx_, out_view, in_view, filter_view);
   }
 
  private:
@@ -226,11 +217,7 @@ class FusedLaplacianOpGpu : public OpImplBase<GPUBackend> {
   kernels::KernelContext ctx_;
 
   std::vector<float> window_ = {0.5, 0., 0.5, 0., -2., 0., 0.5, 0., 0.5};
-  std::vector<float> host_windows_;
-  TensorListShape<2> window_sizes_;
-  TensorVector<CPUBackend> windows_cpu_;
-  TensorList<GPUBackend> windows_gpu_;
-  bool already_filled_in_ = false;
+  Tensor<CPUBackend> filter_;
 };
 
 
