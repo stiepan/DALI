@@ -59,7 +59,7 @@ __host__ __device__ float get_value(const In* in, int in_h, int in_w, int c, int
   return in[in_idx];
 }
 
-template <typename Out, typename In, typename W>
+template <int lanes, typename Out, typename In, typename W>
 __global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
   int sample_idx = blockIdx.z;
   auto sample_desc = descs[sample_idx];
@@ -68,28 +68,43 @@ __global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
   //   filter[i] = global_filter[i];
   // }
   // __syncthreads();
-  int grid_size = gridDim.x * blockDim.x;
+  int grid_size = lanes * gridDim.x * blockDim.x;
   int rr = sample_desc.r / 2;
   int rs = sample_desc.s / 2;
   int wc = sample_desc.w * sample_desc.c;
   auto* out = sample_desc.out;
   auto* in = sample_desc.in;
-  for (int idx = blockDim.x * blockIdx.x + threadIdx.x; idx < sample_desc.vol; idx += grid_size) {
+  for (int base_idx = blockDim.x * lanes * blockIdx.x + threadIdx.x; base_idx < sample_desc.vol;
+       base_idx += grid_size) {
     // sample_desc.out[idx] = sample_desc.in[idx];
-    int h, w, c;
-    position(idx, sample_desc, h, w, c);
-    int filter_pos = 0;
-    float acc = 0;
-    for (int r = -rr; r <= rr; r++) {
-      int inp_h = h + r;
-      for (int s = -rs; s <= rs; s++) {
-        int inp_w = w + s;
-        float in_val =
-            get_value(in, inp_h, inp_w, c, sample_desc.h, sample_desc.w, wc, sample_desc.c);
-        acc += in_val * filter[filter_pos++];
+    int h[lanes], w[lanes], c[lanes];
+    {
+      int idx = base_idx;
+#pragma unroll
+      for (int lane = 0; lane < lanes; lane++, idx += blockDim.x) {
+        position(idx, sample_desc, h[lane], w[lane], c[lane]);
       }
     }
-    out[idx] = acc;
+    int filter_pos = 0;
+    float acc[lanes] = {};
+    for (int r = -rr; r <= rr; r++) {
+      for (int s = -rs; s <= rs; s++) {
+        auto filter_coef = filter[filter_pos++];
+#pragma unroll
+        for (int lane = 0; lane < lanes; lane++) {
+          int inp_h = h[lane] + r;
+          int inp_w = w[lane] + s;
+          float in_val =
+              get_value(in, inp_h, inp_w, c[lane], sample_desc.h, sample_desc.w, wc, sample_desc.c);
+          acc[lane] += in_val * filter_coef;
+        }
+      }
+    }
+    int idx = base_idx;
+#pragma unroll
+    for (int lane = 0; lane < lanes; lane++, idx += blockDim.x) {
+      out[idx] = acc[lane];
+    }
   }
 }
 
@@ -143,11 +158,13 @@ struct Convolution2dGpu {
     }
     SampleDesc<Out, In, W>* descs_dev =
         ctx.scratchpad->ToGPU(ctx.gpu.stream, make_span(samples_desc_));
-    unsigned int block_size = 128;
-    unsigned int num_blocks = ((max_vol + block_size - 1) / block_size);
+    constexpr unsigned int block_size = 128;
+    constexpr int lanes = 8;
+    constexpr int logical_block_size = block_size * lanes;
+    unsigned int num_blocks = ((max_vol + logical_block_size - 1) / logical_block_size);
     dim3 grid = {num_blocks, 1, num_samples};
     dim3 block = {block_size, 1, 1};
-    conv2d<<<grid, block, 0, ctx.gpu.stream>>>(descs_dev);
+    conv2d<lanes><<<grid, block, 0, ctx.gpu.stream>>>(descs_dev);
     CUDA_CALL(cudaGetLastError());
   }
 
