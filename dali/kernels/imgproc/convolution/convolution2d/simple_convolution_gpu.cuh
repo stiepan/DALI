@@ -15,8 +15,9 @@
 #ifndef DALI_KERNELS_IMGPROC_CONVOLUTION_CONVOLUTION2D_SIMPLE_CONVOLUTION_GPU_H_
 #define DALI_KERNELS_IMGPROC_CONVOLUTION_CONVOLUTION2D_SIMPLE_CONVOLUTION_GPU_H_
 
-#include "cutlass/conv/device/batched_implict_gemm_convolution.h"
-#include "cutlass/conv/kernel/fixed_channel_2d_conv.h"
+// #include "cutlass/conv/device/batched_implict_gemm_convolution.h"
+// #include "cutlass/conv/kernel/fixed_channel_2d_conv.h"
+// #include "dali/core/span.h"
 // #include "dali/core/convert.h"
 #include "dali/core/format.h"
 #include "dali/core/tensor_view.h"
@@ -29,23 +30,17 @@
 namespace dali {
 namespace kernels {
 
-
-constexpr int MAX_KERNEL_VOLUME = 256;
-
-struct FilterDesc {
-  float data[MAX_KERNEL_VOLUME];
+template <typename Out, typename In, typename W>
+struct SampleDesc {
+  const W* __restrict__ filter;
+  const In* __restrict__ in;
+  Out* out;
+  int h, w, c, vol;
   int r, s;
 };
 
-template <typename Out, typename In>
-struct SampleDesc {
-  const In* in;
-  Out* out;
-  int h, w, c, vol, r, s;
-};
-
-template <typename Out, typename In>
-__host__ __device__ void position(int idx, const SampleDesc<Out, In>& desc, int& h, int& w,
+template <typename Out, typename In, typename W>
+__host__ __device__ void position(int idx, const SampleDesc<Out, In, W>& desc, int& h, int& w,
                                   int& c) {
   c = idx % desc.c;
   idx /= desc.c;
@@ -64,12 +59,11 @@ __host__ __device__ float get_value(const In* in, int in_h, int in_w, int c, int
   return in[in_idx];
 }
 
-template <typename Out, typename In>
-__global__ void conv2d(const SampleDesc<Out, In>* descs, const FilterDesc filter_desc, int num_samples) {
+template <typename Out, typename In, typename W>
+__global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
   int sample_idx = blockIdx.z;
   auto sample_desc = descs[sample_idx];
-  // const float* const __restrict__ filter = filter_desc.data;
-  const float* filter = filter_desc.data;
+  auto* filter = sample_desc.filter;
   // for (int i = threadIdx.x; i < sample_desc.filter_vol; i += blockDim.x) {
   //   filter[i] = global_filter[i];
   // }
@@ -99,24 +93,19 @@ __global__ void conv2d(const SampleDesc<Out, In>* descs, const FilterDesc filter
   }
 }
 
-
-template <typename Out, typename In, typename W, int axes, bool has_channels = false,
-          bool is_sequence = false>
-struct Convolution2dGpu;
-
-template <typename Out, typename In, typename W, bool has_channels, bool is_sequence>
-struct Convolution2dGpu<Out, In, W, 2, has_channels, is_sequence> {
+template <typename Out, typename In, typename W, bool has_channel_dim, bool has_sequence_dim>
+struct Convolution2dGpu {
   static constexpr int axes = 2;
-  static constexpr int sequence_axes = static_cast<int>(is_sequence);
-  static constexpr int channel_axes = static_cast<int>(has_channels);
-  static constexpr int ndim = sequence_axes + axes + channel_axes;
+  static constexpr int num_sequence_dim = static_cast<int>(has_sequence_dim);
+  static constexpr int num_channels_dim = static_cast<int>(has_channel_dim);
+  static constexpr int ndim = num_sequence_dim + axes + num_channels_dim;
   using Intermediate = decltype(std::declval<W>() * std::declval<In>());
   static_assert(std::is_same<Intermediate, W>::value);
 
   KernelRequirements Setup(KernelContext& ctx, const TensorListShape<ndim>& in_shape) {
     KernelRequirements req;
     ScratchpadEstimator se;
-    se.add<mm::memory_kind::device, SampleDesc<Out, In>>(in_shape.num_samples());
+    se.add<mm::memory_kind::device, SampleDesc<Out, In, W>>(in_shape.num_samples());
     req.scratch_sizes = se.sizes;
     req.output_shapes.push_back(in_shape);
     return req;
@@ -124,39 +113,46 @@ struct Convolution2dGpu<Out, In, W, 2, has_channels, is_sequence> {
 
   void Run(KernelContext& ctx, const TensorListView<StorageGPU, Out, ndim>& out,
            const TensorListView<StorageGPU, const In, ndim>& in,
-           const TensorView<StorageCPU, const W, 2>& filter) {
+           const TensorListView<StorageGPU, const W, axes>& filters) {
     unsigned int num_samples = in.shape.num_samples();
 
     samples_desc_.clear();
     samples_desc_.reserve(num_samples);
     const auto& in_shapes = in.shape;
+    const auto& filter_shapes = filters.shape;
 
     int max_vol = 0;
     for (int sample_idx = 0; sample_idx < num_samples; sample_idx++) {
       const auto& in_out_shape = in_shapes[sample_idx];
-      int h = in_out_shape[0], w = in_out_shape[1], c = in_out_shape[2];
+      const auto& filter_shape = filter_shapes[sample_idx];
       int vol = volume(in_out_shape);
       max_vol = std::max(max_vol, vol);
-      SampleDesc<Out, In> desc = {
-          in.tensor_data(sample_idx), out.tensor_data(sample_idx), h, w, c, vol, filter.shape[0], filter.shape[1]};
+      int h = in_out_shape[0], w = in_out_shape[1];
+      int c = has_channel_dim ? in_out_shape[2] : 1;
+      int r = filter_shape[0], s = filter_shape[1];
+      SampleDesc<Out, In, W> desc = {filters.tensor_data(sample_idx),
+                                     in.tensor_data(sample_idx),
+                                     out.tensor_data(sample_idx),
+                                     h,
+                                     w,
+                                     c,
+                                     vol,
+                                     r,
+                                     s};
       samples_desc_.push_back(desc);
     }
-    filter_desc_.r = filter.shape[0];
-    filter_desc_.s = filter.shape[1];
-    std::memcpy(filter_desc_.data, filter.data, volume(filter.shape) * sizeof(float));
-    SampleDesc<Out, In>* descs_dev =
+    SampleDesc<Out, In, W>* descs_dev =
         ctx.scratchpad->ToGPU(ctx.gpu.stream, make_span(samples_desc_));
     unsigned int block_size = 128;
     unsigned int num_blocks = ((max_vol + block_size - 1) / block_size);
     dim3 grid = {num_blocks, 1, num_samples};
     dim3 block = {block_size, 1, 1};
-    conv2d<<<grid, block, 0, ctx.gpu.stream>>>(descs_dev, filter_desc_, num_samples);
+    conv2d<<<grid, block, 0, ctx.gpu.stream>>>(descs_dev);
     CUDA_CALL(cudaGetLastError());
   }
 
  private:
-  std::vector<SampleDesc<Out, In>> samples_desc_;
-  FilterDesc filter_desc_;
+  std::vector<SampleDesc<Out, In, W>> samples_desc_;
 };
 
 }  // namespace kernels

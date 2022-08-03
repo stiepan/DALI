@@ -20,9 +20,9 @@
 
 #include "dali/core/span.h"
 #include "dali/core/static_switch.h"
+#include "dali/kernels/imgproc/convolution/convolution2d/simple_convolution_gpu.cuh"
 #include "dali/kernels/imgproc/convolution/laplacian_gpu.cuh"
 #include "dali/kernels/imgproc/convolution/laplacian_windows.h"
-#include "dali/kernels/imgproc/convolution/convolution2d/simple_convolution_gpu.cuh"
 #include "dali/kernels/kernel_manager.h"
 #include "dali/operators/image/convolution/laplacian.h"
 #include "dali/pipeline/data/views.h"
@@ -150,7 +150,8 @@ class LaplacianOpGpu : public OpImplBase<GPUBackend> {
 template <typename Out, typename In, int axes, bool has_channels, bool is_sequence>
 class FusedLaplacianOpGpu : public OpImplBase<GPUBackend> {
  public:
-  using Kernel = kernels::Convolution2dGpu<Out, In, float, axes, has_channels, is_sequence>;
+  static_assert(axes == 2);
+  using Kernel = kernels::Convolution2dGpu<Out, In, float, has_channels, is_sequence>;
   static constexpr int ndim = Kernel::ndim;
 
   /**
@@ -158,9 +159,10 @@ class FusedLaplacianOpGpu : public OpImplBase<GPUBackend> {
    *              which is guaranteed to be alive for the entire lifetime of this object
    */
   explicit FusedLaplacianOpGpu(const OpSpec* spec, const DimDesc& dim_desc)
-      : spec_{*spec}, args{*spec}, dim_desc_{dim_desc} {
+      : spec_{*spec}, args{*spec}, dim_desc_{dim_desc}, lap_windows_{maxWindowSize} {
     kmgr_.Resize<Kernel>(1);
     filter_.set_type(DALIDataType::DALI_FLOAT);
+    filter_dev_.set_type(DALIDataType::DALI_FLOAT);
   }
 
   bool SetupImpl(std::vector<OutputDesc>& output_desc, const workspace_t<GPUBackend>& ws) override {
@@ -177,11 +179,26 @@ class FusedLaplacianOpGpu : public OpImplBase<GPUBackend> {
     output_desc.resize(1);
     output_desc[0].type = type2id<Out>::value;
     // Shape is set by ProcessOutputDesc
-    filter_.Resize(TensorShape<2>{3, 3});
-    auto filter_view = view<float, 2>(filter_);
-    for (int i = 0; i < 9; i++) {
-      filter_view.data[i] = window_[i];
+
+    args.ObtainLaplacianArgs(spec_, ws, nsamples);
+    auto window_size = args.GetWindowSizes(0)[0][0];
+    float scaling_factor = std::exp2f(-(2 * window_size - 4));
+    filter_.Resize(uniform_list_shape(nsamples, TensorShape<2>{window_size, window_size}));
+    auto filter_views = view<float, 2>(filter_);
+    const auto& deriv_window = lap_windows_.GetDerivWindow(window_size);
+    const auto& smooth_window = lap_windows_.GetSmoothingWindow(window_size);
+    for (int sample_idx = 0; sample_idx < nsamples; sample_idx++) {
+      auto filter_view = filter_views[sample_idx];
+      for (int r = 0, i = 0; r < window_size; r++) {
+        for (int s = 0; s < window_size; s++) {
+          filter_view.data[i++] = scaling_factor * (deriv_window.data[r] * smooth_window.data[s] +
+                                                    deriv_window.data[s] * smooth_window.data[r]);
+        }
+      }
     }
+
+    filter_dev_.set_order(ws.stream());
+    filter_dev_.Copy(filter_, ws.stream());
 
     auto& req = kmgr_.Setup<Kernel>(0, ctx_, processed_shape.to_static<ndim>());
     return true;
@@ -203,8 +220,8 @@ class FusedLaplacianOpGpu : public OpImplBase<GPUBackend> {
     auto out_view_dyn = view<Out>(output);
     auto in_view = reshape<ndim>(in_view_dyn, static_shape);
     auto out_view = reshape<ndim>(out_view_dyn, static_shape);
-    auto filter_view = view<float, 2>(filter_);
 
+    auto filter_view = view<float, 2>(filter_dev_);
     kmgr_.Run<Kernel>(0, ctx_, out_view, in_view, filter_view);
   }
 
@@ -212,12 +229,13 @@ class FusedLaplacianOpGpu : public OpImplBase<GPUBackend> {
   const OpSpec& spec_;
   LaplacianArgs<axes> args;
   DimDesc dim_desc_;
+  kernels::LaplacianWindows<float> lap_windows_;
 
   kernels::KernelManager kmgr_;
   kernels::KernelContext ctx_;
 
-  std::vector<float> window_ = {0.5, 0., 0.5, 0., -2., 0., 0.5, 0., 0.5};
-  Tensor<CPUBackend> filter_;
+  TensorList<CPUBackend> filter_;
+  TensorList<GPUBackend> filter_dev_;
 };
 
 
