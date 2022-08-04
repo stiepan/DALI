@@ -36,18 +36,8 @@ struct SampleDesc {
   const In* __restrict__ in;
   Out* out;
   int h, w, c, vol;
-  int r, s;
+  int r, s, filter_vol;
 };
-
-// template <typename Out, typename In, typename W>
-// __host__ __device__ void position(int idx, const SampleDesc<Out, In, W>& desc, int& h, int& w,
-//                                   int& c) {
-//   c = idx % desc.c;
-//   idx /= desc.c;
-//   w = idx % desc.w;
-//   idx /= desc.w;
-//   h = idx;
-// }
 
 template <typename In>
 __host__ __device__ float get_value(const In* in, int in_h, int in_wc, int H, int WC) {
@@ -60,13 +50,14 @@ __host__ __device__ float get_value(const In* in, int in_h, int in_wc, int H, in
 
 template <int lanes, typename Out, typename In, typename W>
 __global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
+  extern __shared__ float filter[];
   int sample_idx = blockIdx.z;
   auto sample_desc = descs[sample_idx];
-  auto* filter = sample_desc.filter;
-  // for (int i = threadIdx.x; i < sample_desc.filter_vol; i += blockDim.x) {
-  //   filter[i] = global_filter[i];
-  // }
-  // __syncthreads();
+  auto* global_filter = sample_desc.filter;
+  for (int i = threadIdx.x; i < sample_desc.filter_vol; i += blockDim.x) {
+    filter[i] = global_filter[i];
+  }
+  __syncthreads();
   // int grid_size = lanes * gridDim.x * blockDim.x;
   int rr = sample_desc.r / 2;
   int rs = sample_desc.s / 2;
@@ -134,7 +125,7 @@ struct Convolution2dGpu {
     const auto& in_shapes = in.shape;
     const auto& filter_shapes = filters.shape;
 
-    int max_width = 0, max_height = 0;
+    int max_width = 0, max_height = 0, max_filter_vol = 0;
     for (int sample_idx = 0; sample_idx < num_samples; sample_idx++) {
       const auto& in_out_shape = in_shapes[sample_idx];
       const auto& filter_shape = filter_shapes[sample_idx];
@@ -142,8 +133,10 @@ struct Convolution2dGpu {
       // max_vol = std::max(max_vol, vol);
       int h = in_out_shape[0], w = in_out_shape[1];
       int c = has_channel_dim ? in_out_shape[2] : 1;
+      int filter_vol = volume(filter_shape);
       max_width = std::max(max_width, w * c);
       max_height = std::max(max_height, h);
+      max_filter_vol = std::max(max_filter_vol, filter_vol);
       int r = filter_shape[0], s = filter_shape[1];
       SampleDesc<Out, In, W> desc = {filters.tensor_data(sample_idx),
                                      in.tensor_data(sample_idx),
@@ -153,7 +146,8 @@ struct Convolution2dGpu {
                                      c,
                                      vol,
                                      r,
-                                     s};
+                                     s,
+                                     filter_vol};
       samples_desc_.push_back(desc);
     }
     SampleDesc<Out, In, W>* descs_dev =
@@ -168,7 +162,7 @@ struct Convolution2dGpu {
     num_blocks_w = std::min(num_blocks_w, max_grid_width);
     dim3 grid = {num_blocks_w, num_blocks_h, num_samples};
     dim3 block = {block_width, 1, 1};
-    conv2d<lanes><<<grid, block, 0, ctx.gpu.stream>>>(descs_dev);
+    conv2d<lanes><<<grid, block, max_filter_vol * sizeof(float), ctx.gpu.stream>>>(descs_dev);
     CUDA_CALL(cudaGetLastError());
   }
 
