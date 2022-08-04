@@ -74,10 +74,10 @@ __global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
   auto* out = sample_desc.out;
   auto* in = sample_desc.in;
   // sample_desc.out[idx] = sample_desc.in[idx];
-  for (int h_idx = lanes * blockDim.x * blockIdx.x + threadIdx.x; h_idx < sample_desc.h;
-       h_idx += gridDim.x * lanes * blockDim.x) {
-    for (int wc_idx = blockDim.y * blockIdx.y + threadIdx.y; wc_idx < wc;
-         wc_idx += gridDim.y * blockDim.y) {
+  for (int h_idx = lanes * blockDim.y * blockIdx.y + threadIdx.y; h_idx < sample_desc.h;
+       h_idx += gridDim.y * lanes * blockDim.y) {
+    for (int wc_idx = blockDim.x * blockIdx.x + threadIdx.x; wc_idx < wc;
+         wc_idx += gridDim.x * blockDim.x) {
       int filter_pos = 0;
       float acc[lanes] = {};
       for (int r = -rr; r <= rr; r++) {
@@ -86,7 +86,7 @@ __global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
           int inp_wc = wc_idx + s * sample_desc.c;
 #pragma unroll
           for (int lane = 0; lane < lanes; lane++) {
-            int inp_h = h_idx + blockDim.x * lane + r;
+            int inp_h = h_idx + blockDim.y * lane + r;
             // int inp_h = h[lane] + r;
             // int inp_w = w[lane] + s;
             float in_val = get_value(in, inp_h, inp_wc, sample_desc.h, wc);
@@ -96,7 +96,7 @@ __global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
       }
 #pragma unroll
       for (int lane = 0; lane < lanes; lane++) {
-        int in_h = h_idx + blockDim.x * lane;
+        int in_h = h_idx + blockDim.y * lane;
         if (in_h >= sample_desc.h) {
           break;
         }
@@ -159,15 +159,15 @@ struct Convolution2dGpu {
     SampleDesc<Out, In, W>* descs_dev =
         ctx.scratchpad->ToGPU(ctx.gpu.stream, make_span(samples_desc_));
     constexpr unsigned int block_width = 64;
-    constexpr unsigned int block_height = 1;
-    // constexpr unsigned int block_size = 128;
-    constexpr int lanes = 8;
-    // constexpr int logical_block_size = block_size * lanes;
-    // unsigned int num_blocks = ((max_vol + logical_block_size - 1) / logical_block_size);
-    unsigned int num_blocks_h = (max_height + (block_height * lanes) - 1) / (block_height * lanes);
+    constexpr unsigned int lanes = 8;
+    constexpr unsigned int max_grid_height = 1024;
+    constexpr unsigned int max_grid_width = 1024;
+    unsigned int num_blocks_h = (max_height + lanes - 1) / lanes;
     unsigned int num_blocks_w = (max_width + block_width - 1) / block_width;
-    dim3 grid = {num_blocks_h, num_blocks_w, num_samples};
-    dim3 block = {block_height, block_width, 1};
+    num_blocks_h = std::min(num_blocks_h, max_grid_height);
+    num_blocks_w = std::min(num_blocks_w, max_grid_width);
+    dim3 grid = {num_blocks_w, num_blocks_h, num_samples};
+    dim3 block = {block_width, 1, 1};
     conv2d<lanes><<<grid, block, 0, ctx.gpu.stream>>>(descs_dev);
     CUDA_CALL(cudaGetLastError());
   }
