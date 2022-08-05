@@ -35,8 +35,9 @@ struct SampleDesc {
   const W* __restrict__ filter;
   const In* __restrict__ in;
   Out* out;
-  int h, w, c, vol;
-  int r, s, filter_vol;
+  unsigned int h, w, c, vol;
+  unsigned int r, s, filter_vol;
+  unsigned int in_workspace_width, in_workspace_size;
 };
 
 template <typename In>
@@ -50,36 +51,45 @@ __host__ __device__ float get_value(const In* in, int in_h, int in_wc, int H, in
 
 template <int lanes, typename Out, typename In, typename W>
 __global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
-  extern __shared__ float filter[];
+  extern __shared__ float shm[];
   int sample_idx = blockIdx.z;
   auto sample_desc = descs[sample_idx];
   auto* global_filter = sample_desc.filter;
+  float* filter = shm + sample_desc.in_workspace_size;
   for (int i = threadIdx.x; i < sample_desc.filter_vol; i += blockDim.x) {
     filter[i] = global_filter[i];
   }
   __syncthreads();
   // int grid_size = lanes * gridDim.x * blockDim.x;
-  int rr = sample_desc.r / 2;
-  int rs = sample_desc.s / 2;
-  int wc = sample_desc.w * sample_desc.c;
+  unsigned int rr = sample_desc.r / 2;
+  unsigned int rs = sample_desc.s / 2;
+  unsigned int wc = sample_desc.w * sample_desc.c;
   auto* out = sample_desc.out;
   auto* in = sample_desc.in;
   // sample_desc.out[idx] = sample_desc.in[idx];
   for (int h_idx = lanes * blockIdx.y; h_idx < sample_desc.h; h_idx += gridDim.y * lanes) {
     for (int wc_idx = blockDim.x * blockIdx.x + threadIdx.x; wc_idx < wc;
          wc_idx += gridDim.x * blockDim.x) {
+      for (int w = threadIdx.x; w < blockDim.x + 2 * rs * sample_desc.c; w += blockDim.x) {
+        int global_w = w + blockDim.x * blockIdx.x - rs * sample_desc.c;
+#pragma unroll lanes
+        for (int h = 0; h < lanes + 2 * rr; h++) {
+          int global_h = lanes * blockIdx.y + h - rr;
+          shm[h * sample_desc.in_workspace_width + w] =
+              get_value(in, global_h, global_w, sample_desc.h, wc);
+        }
+      }
+      __syncthreads();
       int filter_pos = 0;
       float acc[lanes] = {};
-      for (int r = -rr; r <= rr; r++) {
-        for (int s = -rs; s <= rs; s++) {
+      for (int r = 0; r < sample_desc.r; r++) {
+        for (int s = 0; s < sample_desc.s; s++) {
           auto filter_coef = filter[filter_pos++];
-          int inp_wc = wc_idx + s * sample_desc.c;
+          int inp_wc = threadIdx.x + s * sample_desc.c;
 #pragma unroll
           for (int lane = 0; lane < lanes; lane++) {
-            int inp_h = h_idx + lane + r;
-            // int inp_h = h[lane] + r;
-            // int inp_w = w[lane] + s;
-            float in_val = get_value(in, inp_h, inp_wc, sample_desc.h, wc);
+            int inp_h = lane + r;
+            float in_val = shm[inp_h * sample_desc.in_workspace_width + inp_wc];
             acc[lane] += in_val * filter_coef;
           }
         }
@@ -105,6 +115,11 @@ struct Convolution2dGpu {
   using Intermediate = decltype(std::declval<W>() * std::declval<In>());
   static_assert(std::is_same<Intermediate, W>::value);
 
+  static constexpr unsigned int block_width = 64;
+  static constexpr unsigned int lanes = 8;
+  static constexpr unsigned int max_grid_height = 32 * 8;
+  static constexpr unsigned int max_grid_width = 32;
+
   KernelRequirements Setup(KernelContext& ctx, const TensorListShape<ndim>& in_shape) {
     KernelRequirements req;
     ScratchpadEstimator se;
@@ -124,19 +139,21 @@ struct Convolution2dGpu {
     const auto& in_shapes = in.shape;
     const auto& filter_shapes = filters.shape;
 
-    int max_width = 0, max_height = 0, max_filter_vol = 0;
+    unsigned int max_width = 0, max_height = 0, max_total_workspace = 0;
     for (int sample_idx = 0; sample_idx < num_samples; sample_idx++) {
       const auto& in_out_shape = in_shapes[sample_idx];
       const auto& filter_shape = filter_shapes[sample_idx];
-      int vol = volume(in_out_shape);
+      unsigned int vol = volume(in_out_shape);
       // max_vol = std::max(max_vol, vol);
-      int h = in_out_shape[0], w = in_out_shape[1];
-      int c = has_channel_dim ? in_out_shape[2] : 1;
-      int filter_vol = volume(filter_shape);
+      unsigned int h = in_out_shape[0], w = in_out_shape[1];
+      unsigned int c = has_channel_dim ? in_out_shape[2] : 1;
+      unsigned int r = filter_shape[0], s = filter_shape[1];
+      unsigned int filter_vol = volume(filter_shape);
+      unsigned int workspace_width = block_width + 2 * (s / 2) * c;
+      unsigned int workspace_size = workspace_width * (lanes + 2 * (r / 2));
       max_width = std::max(max_width, w * c);
       max_height = std::max(max_height, h);
-      max_filter_vol = std::max(max_filter_vol, filter_vol);
-      int r = filter_shape[0], s = filter_shape[1];
+      max_total_workspace = std::max(max_total_workspace, filter_vol + workspace_size);
       SampleDesc<Out, In, W> desc = {filters.tensor_data(sample_idx),
                                      in.tensor_data(sample_idx),
                                      out.tensor_data(sample_idx),
@@ -146,22 +163,20 @@ struct Convolution2dGpu {
                                      vol,
                                      r,
                                      s,
-                                     filter_vol};
+                                     filter_vol,
+                                     workspace_width,
+                                     workspace_size};
       samples_desc_.push_back(desc);
     }
     SampleDesc<Out, In, W>* descs_dev =
         ctx.scratchpad->ToGPU(ctx.gpu.stream, make_span(samples_desc_));
-    constexpr unsigned int block_width = 64;
-    constexpr unsigned int lanes = 8;
-    constexpr unsigned int max_grid_height = 32 * 8;
-    constexpr unsigned int max_grid_width = 32;
     unsigned int num_blocks_h = (max_height + lanes - 1) / lanes;
     unsigned int num_blocks_w = (max_width + block_width - 1) / block_width;
     num_blocks_h = std::min(num_blocks_h, max_grid_height);
     num_blocks_w = std::min(num_blocks_w, max_grid_width);
     dim3 grid = {num_blocks_w, num_blocks_h, num_samples};
     dim3 block = {block_width, 1, 1};
-    conv2d<lanes><<<grid, block, max_filter_vol * sizeof(float), ctx.gpu.stream>>>(descs_dev);
+    conv2d<lanes><<<grid, block, max_total_workspace * sizeof(float), ctx.gpu.stream>>>(descs_dev);
     CUDA_CALL(cudaGetLastError());
   }
 
