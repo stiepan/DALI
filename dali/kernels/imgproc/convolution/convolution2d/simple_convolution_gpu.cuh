@@ -153,8 +153,8 @@ struct Convolution2dGpu {
         ctx.scratchpad->ToGPU(ctx.gpu.stream, make_span(samples_desc_));
     constexpr unsigned int block_width = 64;
     constexpr unsigned int lanes = 8;
-    constexpr unsigned int max_grid_height = 1024;
-    constexpr unsigned int max_grid_width = 1024;
+    constexpr unsigned int max_grid_height = 32 * 8;
+    constexpr unsigned int max_grid_width = 32;
     unsigned int num_blocks_h = (max_height + lanes - 1) / lanes;
     unsigned int num_blocks_w = (max_width + block_width - 1) / block_width;
     num_blocks_h = std::min(num_blocks_h, max_grid_height);
