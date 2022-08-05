@@ -65,8 +65,7 @@ __global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
   auto* out = sample_desc.out;
   auto* in = sample_desc.in;
   // sample_desc.out[idx] = sample_desc.in[idx];
-  for (int h_idx = lanes * blockDim.y * blockIdx.y + threadIdx.y; h_idx < sample_desc.h;
-       h_idx += gridDim.y * lanes * blockDim.y) {
+  for (int h_idx = lanes * blockIdx.y; h_idx < sample_desc.h; h_idx += gridDim.y * lanes) {
     for (int wc_idx = blockDim.x * blockIdx.x + threadIdx.x; wc_idx < wc;
          wc_idx += gridDim.x * blockDim.x) {
       int filter_pos = 0;
@@ -77,7 +76,7 @@ __global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
           int inp_wc = wc_idx + s * sample_desc.c;
 #pragma unroll
           for (int lane = 0; lane < lanes; lane++) {
-            int inp_h = h_idx + blockDim.y * lane + r;
+            int inp_h = h_idx + lane + r;
             // int inp_h = h[lane] + r;
             // int inp_w = w[lane] + s;
             float in_val = get_value(in, inp_h, inp_wc, sample_desc.h, wc);
@@ -87,7 +86,7 @@ __global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
       }
 #pragma unroll
       for (int lane = 0; lane < lanes; lane++) {
-        int in_h = h_idx + blockDim.y * lane;
+        int in_h = h_idx + lane;
         if (in_h >= sample_desc.h) {
           break;
         }
