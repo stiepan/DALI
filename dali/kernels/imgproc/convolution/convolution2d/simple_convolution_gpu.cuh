@@ -40,11 +40,32 @@ struct SampleDesc {
   unsigned int in_workspace_width, in_workspace_size;
 };
 
-template <typename In>
-__host__ __device__ float get_value(const In* in, int in_h, int in_wc, int H, int WC) {
-  if (in_h < 0 || in_wc < 0 || in_h >= H || in_wc >= WC) {
-    return 0;
+
+__host__ __device__ inline int border_reflect_101(int idx, int len) {
+  while (true) {
+    if (idx < 0) {
+      idx = -idx;
+    } else if (idx >= len) {
+      idx = 2 * len - 2 - idx;
+    } else {
+      return idx;
+    }
   }
+}
+
+__host__ __device__ inline int border_reflect_101_wc(int wc_idx, int W, int C, int WC) {
+  if (wc_idx < 0) {
+    int in_w = (wc_idx - C + 1) / C;
+    int in_c = C - 1 + ((wc_idx + 1) % C);
+    return border_reflect_101(in_w, W) * C + in_c;
+  } else if (wc_idx >= WC) {
+    return border_reflect_101(wc_idx / C, W) * C + wc_idx % C;
+  }
+  return wc_idx;
+}
+
+template <typename In>
+__host__ __device__ float get_value(const In* in, int in_h, int in_wc, int WC) {
   int in_idx = in_h * WC + in_wc;
   return in[in_idx];
 }
@@ -69,14 +90,16 @@ __global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
   // sample_desc.out[idx] = sample_desc.in[idx];
   for (int h_start = lanes * blockIdx.y; h_start < sample_desc.h; h_start += gridDim.y * lanes) {
     for (int w_start = blockDim.x * blockIdx.x; w_start < wc; w_start += gridDim.x * blockDim.x) {
+      __syncthreads();
       for (int w = threadIdx.x; w < blockDim.x + (sample_desc.s - 1) * sample_desc.c;
            w += blockDim.x) {
         int global_w = w_start + w - rs * sample_desc.c;
+        global_w = border_reflect_101_wc(global_w, sample_desc.w, sample_desc.c, wc);
 #pragma unroll lanes
         for (int h = 0; h < lanes + sample_desc.r - 1; h++) {
           int global_h = h_start + h - rr;
-          shm[h * sample_desc.in_workspace_width + w] =
-              get_value(in, global_h, global_w, sample_desc.h, wc);
+          global_h = border_reflect_101(global_h, sample_desc.h);
+          shm[h * sample_desc.in_workspace_width + w] = get_value(in, global_h, global_w, wc);
         }
       }
       __syncthreads();
@@ -119,7 +142,7 @@ struct Convolution2dGpu {
 
   static constexpr unsigned int block_width = 64;
   static constexpr unsigned int lanes = 8;
-  static constexpr unsigned int max_grid_height = 32 * 8;
+  static constexpr unsigned int max_grid_height = 32;
   static constexpr unsigned int max_grid_width = 32;
 
   KernelRequirements Setup(KernelContext& ctx, const TensorListShape<ndim>& in_shape) {
