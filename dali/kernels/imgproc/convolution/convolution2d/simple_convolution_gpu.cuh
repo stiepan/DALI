@@ -67,14 +67,14 @@ __global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
   auto* out = sample_desc.out;
   auto* in = sample_desc.in;
   // sample_desc.out[idx] = sample_desc.in[idx];
-  for (int h_idx = lanes * blockIdx.y; h_idx < sample_desc.h; h_idx += gridDim.y * lanes) {
-    for (int wc_idx = blockDim.x * blockIdx.x + threadIdx.x; wc_idx < wc;
-         wc_idx += gridDim.x * blockDim.x) {
-      for (int w = threadIdx.x; w < blockDim.x + 2 * rs * sample_desc.c; w += blockDim.x) {
-        int global_w = w + blockDim.x * blockIdx.x - rs * sample_desc.c;
+  for (int h_start = lanes * blockIdx.y; h_start < sample_desc.h; h_start += gridDim.y * lanes) {
+    for (int w_start = blockDim.x * blockIdx.x; w_start < wc; w_start += gridDim.x * blockDim.x) {
+      for (int w = threadIdx.x; w < blockDim.x + (sample_desc.s - 1) * sample_desc.c;
+           w += blockDim.x) {
+        int global_w = w_start + w - rs * sample_desc.c;
 #pragma unroll lanes
-        for (int h = 0; h < lanes + 2 * rr; h++) {
-          int global_h = lanes * blockIdx.y + h - rr;
+        for (int h = 0; h < lanes + sample_desc.r - 1; h++) {
+          int global_h = h_start + h - rr;
           shm[h * sample_desc.in_workspace_width + w] =
               get_value(in, global_h, global_w, sample_desc.h, wc);
         }
@@ -94,13 +94,15 @@ __global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
           }
         }
       }
+      int in_w = w_start + threadIdx.x;
+      if (in_w < wc) {
 #pragma unroll
-      for (int lane = 0; lane < lanes; lane++) {
-        int in_h = h_idx + lane;
-        if (in_h >= sample_desc.h) {
-          break;
+        for (int lane = 0; lane < lanes; lane++) {
+          int in_h = h_start + lane;
+          if (in_h < sample_desc.h) {
+            out[in_h * wc + in_w] = acc[lane];
+          }
         }
-        out[in_h * wc + wc_idx] = acc[lane];
       }
     }
   }
@@ -149,8 +151,8 @@ struct Convolution2dGpu {
       unsigned int c = has_channel_dim ? in_out_shape[2] : 1;
       unsigned int r = filter_shape[0], s = filter_shape[1];
       unsigned int filter_vol = volume(filter_shape);
-      unsigned int workspace_width = block_width + 2 * (s / 2) * c;
-      unsigned int workspace_size = workspace_width * (lanes + 2 * (r / 2));
+      unsigned int workspace_width = block_width + (s - 1) * c;
+      unsigned int workspace_size = workspace_width * (lanes + r - 1);
       max_width = std::max(max_width, w * c);
       max_height = std::max(max_height, h);
       max_total_workspace = std::max(max_total_workspace, filter_vol + workspace_size);
