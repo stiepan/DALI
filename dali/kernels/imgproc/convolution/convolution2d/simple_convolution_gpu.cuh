@@ -15,6 +15,7 @@
 #ifndef DALI_KERNELS_IMGPROC_CONVOLUTION_CONVOLUTION2D_SIMPLE_CONVOLUTION_GPU_H_
 #define DALI_KERNELS_IMGPROC_CONVOLUTION_CONVOLUTION2D_SIMPLE_CONVOLUTION_GPU_H_
 
+#include <vector>
 // #include "cutlass/conv/device/batched_implict_gemm_convolution.h"
 // #include "cutlass/conv/kernel/fixed_channel_2d_conv.h"
 // #include "dali/core/span.h"
@@ -98,7 +99,8 @@ __global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
         for (int h = 0; h < lanes + sample_desc.r - 1; h++) {
           int global_h = h_start + h - rr;
           global_h = border_reflect_101(global_h, sample_desc.h);
-          shm[h * sample_desc.in_workspace_width + w_shm_idx] = get_value(in, global_h, global_w, wc);
+          shm[h * sample_desc.in_workspace_width + w_shm_idx] =
+              get_value(in, global_h, global_w, wc);
         }
       }
       __syncthreads();
