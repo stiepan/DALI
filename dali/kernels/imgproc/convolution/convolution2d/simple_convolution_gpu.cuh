@@ -38,6 +38,7 @@ struct SampleDesc {
   unsigned int h, w, c, vol;
   unsigned int r, s, filter_vol;
   unsigned int in_workspace_width, in_workspace_size;
+  unsigned int global_read_stride, shm_read_stride;
 };
 
 
@@ -81,25 +82,23 @@ __global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
     filter[i] = global_filter[i];
   }
   __syncthreads();
-  // int grid_size = lanes * gridDim.x * blockDim.x;
   unsigned int rr = sample_desc.r / 2;
   unsigned int rs = sample_desc.s / 2;
   unsigned int wc = sample_desc.w * sample_desc.c;
   auto* out = sample_desc.out;
   auto* in = sample_desc.in;
-  // sample_desc.out[idx] = sample_desc.in[idx];
   for (int h_start = lanes * blockIdx.y; h_start < sample_desc.h; h_start += gridDim.y * lanes) {
     for (int w_start = blockDim.x * blockIdx.x; w_start < wc; w_start += gridDim.x * blockDim.x) {
       __syncthreads();
-      for (int w = threadIdx.x; w < blockDim.x + (sample_desc.s - 1) * sample_desc.c;
-           w += blockDim.x) {
+      for (int w = threadIdx.x, w_shm_idx = threadIdx.x; w_shm_idx < sample_desc.in_workspace_width;
+           w += sample_desc.global_read_stride, w_shm_idx += blockDim.x) {
         int global_w = w_start + w - rs * sample_desc.c;
         global_w = border_reflect_101_wc(global_w, sample_desc.w, sample_desc.c, wc);
 #pragma unroll lanes
         for (int h = 0; h < lanes + sample_desc.r - 1; h++) {
           int global_h = h_start + h - rr;
           global_h = border_reflect_101(global_h, sample_desc.h);
-          shm[h * sample_desc.in_workspace_width + w] = get_value(in, global_h, global_w, wc);
+          shm[h * sample_desc.in_workspace_width + w_shm_idx] = get_value(in, global_h, global_w, wc);
         }
       }
       __syncthreads();
@@ -108,7 +107,7 @@ __global__ void conv2d(const SampleDesc<Out, In, W>* __restrict__ descs) {
       for (int r = 0; r < sample_desc.r; r++) {
         for (int s = 0; s < sample_desc.s; s++) {
           auto filter_coef = filter[filter_pos++];
-          int inp_wc = threadIdx.x + s * sample_desc.c;
+          int inp_wc = threadIdx.x + s * sample_desc.shm_read_stride;
 #pragma unroll
           for (int lane = 0; lane < lanes; lane++) {
             int inp_h = lane + r;
@@ -169,12 +168,20 @@ struct Convolution2dGpu {
       const auto& in_out_shape = in_shapes[sample_idx];
       const auto& filter_shape = filter_shapes[sample_idx];
       unsigned int vol = volume(in_out_shape);
-      // max_vol = std::max(max_vol, vol);
       unsigned int h = in_out_shape[0], w = in_out_shape[1];
       unsigned int c = has_channel_dim ? in_out_shape[2] : 1;
       unsigned int r = filter_shape[0], s = filter_shape[1];
       unsigned int filter_vol = volume(filter_shape);
-      unsigned int workspace_width = block_width + (s - 1) * c;
+      unsigned int workspace_width, global_read_stride, shm_read_stride;
+      if (c <= block_width) {
+        workspace_width = block_width + (s - 1) * c;
+        global_read_stride = block_width;
+        shm_read_stride = c;
+      } else {
+        workspace_width = s * block_width;
+        global_read_stride = c;
+        shm_read_stride = block_width;
+      }
       unsigned int workspace_size = workspace_width * (lanes + r - 1);
       max_width = std::max(max_width, w * c);
       max_height = std::max(max_height, h);
@@ -190,7 +197,9 @@ struct Convolution2dGpu {
                                      s,
                                      filter_vol,
                                      workspace_width,
-                                     workspace_size};
+                                     workspace_size,
+                                     global_read_stride,
+                                     shm_read_stride};
       samples_desc_.push_back(desc);
     }
     SampleDesc<Out, In, W>* descs_dev =
