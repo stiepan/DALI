@@ -140,7 +140,7 @@ DALI_DEVICE DALI_FORCEINLINE void global_input_filter_product(
   for (int r = 0; r < sample_desc.r; r++) {
     for (int s = 0; s < sample_desc.s; s++) {
       auto filter_coef = filter[filter_pos++];
-      // TODO swap r/s loops (in both loops?)
+      // TODO(ktokarski) swap r/s loops (in both loops?)
       int global_w = w_start + threadIdx.x + (sample_desc.filter_left_anchor + s) * sample_desc.c;
       global_w = border_reflect_101_wc(global_w, sample_desc.w, sample_desc.c, sample_desc.wc);
       // Even without shm, using `lanes` speeds up the kernel by reducing
@@ -208,7 +208,7 @@ struct Convolution2dGpu {
   using Intermediate = decltype(std::declval<W>() * std::declval<In>());
   static_assert(std::is_same<Intermediate, W>::value);
 
-  static constexpr int block_width = 64;
+  static constexpr int block_width = 128;
   static constexpr int lanes = 8;
   static constexpr int max_grid_height = 32;
   static constexpr int max_grid_width = 32;
