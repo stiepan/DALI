@@ -130,11 +130,10 @@ DALI_DEVICE DALI_FORCEINLINE void shm_input_filter_product(const SampleDescT& sa
   __syncthreads();
   load_input_to_shm(sample_desc, in_workspace, h_start, w_start);
   __syncthreads();
-  int filter_pos = 0;
-  for (int r = 0; r < sample_desc.r; r++) {
-    for (int s = 0; s < sample_desc.s; s++) {
-      auto filter_coef = filter[filter_pos++];
-      int inp_wc = threadIdx.x + s * sample_desc.c;
+  for (int s = 0; s < sample_desc.s; s++) {
+    int inp_wc = threadIdx.x + s * sample_desc.c;
+    for (int r = 0; r < sample_desc.r; r++) {
+      auto filter_coef = filter[r * sample_desc.s + s];
 #pragma unroll
       for (int lane = 0; lane < SampleDescT::lanes; lane++) {
         int inp_h = lane + r;
@@ -151,13 +150,11 @@ DALI_DEVICE DALI_FORCEINLINE void global_input_filter_product(const SampleDescT&
                                                               typename SampleDescT::Acc* acc,
                                                               int h_start, int w_start) {
   auto* in = sample_desc.in;
-  int filter_pos = 0;
-  for (int r = 0; r < sample_desc.r; r++) {
-    for (int s = 0; s < sample_desc.s; s++) {
-      auto filter_coef = filter[filter_pos++];
-      // TODO(ktokarski) swap r/s loops (in both loops?)
-      int global_w = w_start + threadIdx.x + (sample_desc.filter_left_anchor + s) * sample_desc.c;
-      global_w = border_reflect_101_strided(global_w, sample_desc.w, sample_desc.c, sample_desc.wc);
+  for (int s = 0; s < sample_desc.s; s++) {
+    int global_w = w_start + threadIdx.x + (sample_desc.filter_left_anchor + s) * sample_desc.c;
+    global_w = border_reflect_101_strided(global_w, sample_desc.w, sample_desc.c, sample_desc.wc);
+    for (int r = 0; r < sample_desc.r; r++) {
+      auto filter_coef = filter[r * sample_desc.s + s];
       // Even without shm, using `lanes` speeds up the kernel by reducing
       // the cost of nested loops arithmetic per single output value
 #pragma unroll
