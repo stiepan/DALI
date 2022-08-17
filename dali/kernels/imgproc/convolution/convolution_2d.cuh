@@ -60,12 +60,11 @@ DALI_HOST_DEV DALI_FORCEINLINE int border_reflect_101(int idx, int len) {
 DALI_HOST_DEV DALI_FORCEINLINE int border_reflect_101_strided(int idx, int reflect_dim_size,
                                                               int inner_stride, int total_stride) {
   if (idx < 0) {
-    // TODO(ktokarski) use div_floor
-    int reflect_dim_idx = (idx - inner_stride + 1) / inner_stride;
-    // TODO(ktokarski) consider if the formula can be simplfied
-    int inner_dim_idx = inner_stride - 1 + ((idx + 1) % inner_stride);
+    int reflect_dim_idx = (idx + 1) / inner_stride - 1;
+    int inner_dim_idx = (idx + 1) % inner_stride + inner_stride - 1;
     return border_reflect_101(reflect_dim_idx, reflect_dim_size) * inner_stride + inner_dim_idx;
-  } else if (idx >= total_stride) {
+  }
+  if (idx >= total_stride) {
     return border_reflect_101(idx / inner_stride, reflect_dim_size) * inner_stride +
            idx % inner_stride;
   }
@@ -76,17 +75,21 @@ template <typename SampleDescT>
 DALI_DEVICE DALI_FORCEINLINE void load_input_to_shm(const SampleDescT& sample_desc,
                                                     typename SampleDescT::In* in_workspace,
                                                     int h_start, int w_start) {
-  constexpr int lanes = SampleDescT::lanes;
   const auto* in = sample_desc.in;
   for (int w = threadIdx.x; w < sample_desc.in_workspace_width; w += blockDim.x) {
     int global_w = w_start + w + sample_desc.filter_left_anchor * sample_desc.c;
     global_w = border_reflect_101_strided(global_w, sample_desc.w, sample_desc.c, sample_desc.wc);
-    // TODO(ktokarski) split it into two loops where one is completely unrolled?
-#pragma unroll lanes
-    for (int h = 0; h < lanes + sample_desc.r - 1; h++) {
+    auto load_row = [&](int h) {
       int global_h = border_reflect_101(h_start + h + sample_desc.filter_top_anchor, sample_desc.h);
       in_workspace[h * sample_desc.in_workspace_width + w] =
           in[global_h * sample_desc.wc + global_w];
+    };
+#pragma unroll
+    for (int h = 0; h < SampleDescT::lanes; h++) {
+      load_row(h);
+    }
+    for (int h = SampleDescT::lanes; h < SampleDescT::lanes + sample_desc.r - 1; h++) {
+      load_row(h);
     }
   }
 }
@@ -212,7 +215,7 @@ __global__ void conv2d(const SampleDescT* descs) {
 
 template <typename Out, typename In, typename W, bool has_channel_dim, bool has_sequence_dim>
 struct Convolution2dGpu {
-  /* Vernicular disclaimer: it computes, in fact, a corellation not a convolution.
+  /* In fact, it computes a corellation not a convolution.
   Flip filter in both dimensions for actual convoltion. */
 
   static constexpr int axes = 2;
@@ -220,7 +223,6 @@ struct Convolution2dGpu {
   static constexpr int num_channels_dim = static_cast<int>(has_channel_dim);
   static constexpr int ndim = num_sequence_dim + axes + num_channels_dim;
   using Intermediate = decltype(std::declval<W>() * std::declval<In>());
-  // TODO(ktokarski) It could be extended with some integral types as well
   static_assert(std::is_same<Intermediate, float>::value);
 
   static constexpr int block_width = 128;
@@ -282,9 +284,8 @@ struct Convolution2dGpu {
     }
     SampleDescT* descs_dev;
     std::tie(descs_dev) = ctx.scratchpad->ToContiguousGPU(ctx.gpu.stream, samples_desc_);
-    // TODO(ktokarski) Use div_ceil
-    int num_blocks_h = (max_height + lanes - 1) / lanes;
-    int num_blocks_w = (max_width + block_width - 1) / block_width;
+    int num_blocks_h = div_ceil(max_height, lanes);
+    int num_blocks_w = div_ceil(max_width, block_width);
     num_blocks_h = std::min(num_blocks_h, max_grid_height);
     num_blocks_w = std::min(num_blocks_w, max_grid_width);
     dim3 grid(num_blocks_w, num_blocks_h, num_samples);

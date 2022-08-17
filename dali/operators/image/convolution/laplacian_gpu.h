@@ -20,7 +20,7 @@
 
 #include "dali/core/span.h"
 #include "dali/core/static_switch.h"
-#include "dali/kernels/imgproc/convolution/convolution2d/simple_convolution_gpu.cuh"
+#include "dali/kernels/imgproc/convolution/convolution_2d.cuh"
 #include "dali/kernels/imgproc/convolution/laplacian_gpu.cuh"
 #include "dali/kernels/imgproc/convolution/laplacian_windows.h"
 #include "dali/kernels/kernel_manager.h"
@@ -200,7 +200,7 @@ class FusedLaplacianOpGpu : public OpImplBase<GPUBackend> {
     filter_dev_.set_order(ws.stream());
     filter_dev_.Copy(filter_, ws.stream());
 
-    auto& req = kmgr_.Setup<Kernel>(0, ctx_, processed_shape.to_static<ndim>());
+    // auto& req = kmgr_.Setup<Kernel>(0, ctx_, processed_shape.to_static<ndim>());
     return true;
   }
 
