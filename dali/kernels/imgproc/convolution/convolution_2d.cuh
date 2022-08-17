@@ -38,7 +38,7 @@ struct SampleDesc {
   const In* __restrict__ in;
   const W* __restrict__ filter;
 
-  int h, w, c, wc, vol;
+  int f, h, w, c, wc, hwc;
   int r, s, filter_vol;
   int filter_top_anchor, filter_left_anchor;
   int in_workspace_width, in_workspace_num_elements;
@@ -73,9 +73,9 @@ DALI_HOST_DEV DALI_FORCEINLINE int border_reflect_101_strided(int idx, int refle
 
 template <typename SampleDescT>
 DALI_DEVICE DALI_FORCEINLINE void load_input_to_shm(const SampleDescT& sample_desc,
+                                                    const typename SampleDescT::In* in,
                                                     typename SampleDescT::In* in_workspace,
                                                     int h_start, int w_start) {
-  const auto* in = sample_desc.in;
   for (int w = threadIdx.x; w < sample_desc.in_workspace_width; w += blockDim.x) {
     int global_w = w_start + w + sample_desc.filter_left_anchor * sample_desc.c;
     global_w = border_reflect_101_strided(global_w, sample_desc.w, sample_desc.c, sample_desc.wc);
@@ -105,11 +105,11 @@ DALI_DEVICE DALI_FORCEINLINE void load_filter_to_shm(const SampleDescT& sample_d
 
 template <typename SampleDescT>
 DALI_DEVICE DALI_FORCEINLINE void store_acc_in_global_output(const SampleDescT& sample_desc,
-                                                             typename SampleDescT::Acc* acc,
+                                                             typename SampleDescT::Out* out,
+                                                             const typename SampleDescT::Acc* acc,
                                                              int h_start, int w_start) {
   int reflect_dim_idx = w_start + threadIdx.x;
   if (reflect_dim_idx < sample_desc.wc) {
-    auto* out = sample_desc.out;
 #pragma unroll
     for (int lane = 0; lane < SampleDescT::lanes; lane++) {
       int in_h = h_start + lane;
@@ -124,11 +124,12 @@ DALI_DEVICE DALI_FORCEINLINE void store_acc_in_global_output(const SampleDescT& 
 template <typename SampleDescT>
 DALI_DEVICE DALI_FORCEINLINE void shm_input_filter_product(const SampleDescT& sample_desc,
                                                            const typename SampleDescT::W* filter,
+                                                           const typename SampleDescT::In* in,
                                                            typename SampleDescT::In* in_workspace,
                                                            typename SampleDescT::Acc* acc,
                                                            int h_start, int w_start) {
   __syncthreads();
-  load_input_to_shm(sample_desc, in_workspace, h_start, w_start);
+  load_input_to_shm(sample_desc, in, in_workspace, h_start, w_start);
   __syncthreads();
   for (int s = 0; s < sample_desc.s; s++) {
     int inp_wc = threadIdx.x + s * sample_desc.c;
@@ -146,10 +147,10 @@ DALI_DEVICE DALI_FORCEINLINE void shm_input_filter_product(const SampleDescT& sa
 
 template <typename SampleDescT>
 DALI_DEVICE DALI_FORCEINLINE void global_input_filter_product(const SampleDescT& sample_desc,
+                                                              const typename SampleDescT::In* in,
                                                               const typename SampleDescT::W* filter,
                                                               typename SampleDescT::Acc* acc,
                                                               int h_start, int w_start) {
-  auto* in = sample_desc.in;
   for (int s = 0; s < sample_desc.s; s++) {
     int global_w = w_start + threadIdx.x + (sample_desc.filter_left_anchor + s) * sample_desc.c;
     global_w = border_reflect_101_strided(global_w, sample_desc.w, sample_desc.c, sample_desc.wc);
@@ -171,12 +172,16 @@ DALI_DEVICE DALI_FORCEINLINE void global_input_filter_product(const SampleDescT&
 template <typename SampleDescT, typename ConvF>
 DALI_DEVICE DALI_FORCEINLINE void stride_grid(ConvF&& convf, const SampleDescT& sample_desc) {
   constexpr int lanes = SampleDescT::lanes;
-  for (int h_start = lanes * blockIdx.y; h_start < sample_desc.h; h_start += gridDim.y * lanes) {
-    for (int w_start = blockDim.x * blockIdx.x; w_start < sample_desc.wc;
-         w_start += gridDim.x * blockDim.x) {
-      float acc[lanes] = {};
-      convf(sample_desc, acc, h_start, w_start);
-      store_acc_in_global_output(sample_desc, acc, h_start, w_start);
+  const auto* in = sample_desc.in;
+  auto* out = sample_desc.out;
+  for (int f = 0; f < sample_desc.f; f++, in += sample_desc.hwc, out += sample_desc.hwc) {
+    for (int h_start = lanes * blockIdx.y; h_start < sample_desc.h; h_start += gridDim.y * lanes) {
+      for (int w_start = blockDim.x * blockIdx.x; w_start < sample_desc.wc;
+           w_start += gridDim.x * blockDim.x) {
+        float acc[lanes] = {};
+        convf(sample_desc, in, acc, h_start, w_start);
+        store_acc_in_global_output(sample_desc, out, acc, h_start, w_start);
+      }
     }
   }
 }
@@ -195,15 +200,16 @@ __global__ void conv2d(const SampleDescT* descs) {
   __syncthreads();
   if (sample_desc.in_workspace_num_elements) {
     stride_grid(
-        [&filter, &in_workspace](const SampleDescT& sample_desc, Acc* acc, int h_start,
-                                 int w_start) {
-          shm_input_filter_product(sample_desc, filter, in_workspace, acc, h_start, w_start);
+        [&filter, &in_workspace](const SampleDescT& sample_desc, const In* in, Acc* acc,
+                                 int h_start, int w_start) {
+          shm_input_filter_product(sample_desc, filter, in, in_workspace, acc, h_start, w_start);
         },
         sample_desc);
   } else {
     stride_grid(
-        [&filter](const SampleDescT& sample_desc, Acc* acc, int h_start, int w_start) {
-          global_input_filter_product(sample_desc, filter, acc, h_start, w_start);
+        [&filter](const SampleDescT& sample_desc, const In* in, Acc* acc, int h_start,
+                  int w_start) {
+          global_input_filter_product(sample_desc, filter, in, acc, h_start, w_start);
         },
         sample_desc);
   }
@@ -244,9 +250,9 @@ struct Convolution2dGpu {
     for (int sample_idx = 0; sample_idx < num_samples; sample_idx++) {
       const auto& in_out_shape = in_shapes[sample_idx];
       const auto& filter_shape = filter_shapes[sample_idx];
-      int vol = volume(in_out_shape);
-      int h = in_out_shape[0], w = in_out_shape[1];
-      int c = has_channel_dim ? in_out_shape[2] : 1;
+      int f = has_sequence_dim ? in_out_shape[0] : 1;
+      int h = in_out_shape[num_sequence_dim], w = in_out_shape[num_sequence_dim + 1];
+      int c = has_channel_dim ? in_out_shape[num_sequence_dim + 2] : 1;
       int r = filter_shape[0], s = filter_shape[1];
       int filter_vol = volume(filter_shape);
       int filter_size = filter_vol * sizeof(W);
@@ -265,11 +271,12 @@ struct Convolution2dGpu {
       SampleDescT desc = {out.tensor_data(sample_idx),
                           in.tensor_data(sample_idx),
                           filters.tensor_data(sample_idx),
+                          f,
                           h,
                           w,
                           c,
                           w * c,
-                          vol,
+                          h * w * c,
                           r,
                           s,
                           filter_vol,
