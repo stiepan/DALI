@@ -20,7 +20,7 @@
 
 #include "dali/core/span.h"
 #include "dali/core/static_switch.h"
-#include "dali/kernels/imgproc/convolution/convolution_2d.cuh"
+#include "dali/kernels/imgproc/convolution/convolution_2d_gpu.cuh"
 #include "dali/kernels/imgproc/convolution/laplacian_gpu.cuh"
 #include "dali/kernels/imgproc/convolution/laplacian_windows.h"
 #include "dali/kernels/kernel_manager.h"

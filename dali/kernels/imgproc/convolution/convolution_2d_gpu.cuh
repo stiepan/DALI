@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef DALI_KERNELS_IMGPROC_CONVOLUTION_CONVOLUTION2D_SIMPLE_CONVOLUTION_GPU_H_
-#define DALI_KERNELS_IMGPROC_CONVOLUTION_CONVOLUTION2D_SIMPLE_CONVOLUTION_GPU_H_
+#ifndef DALI_KERNELS_IMGPROC_CONVOLUTION_CONVOLUTION_2D_GPU_H_
+#define DALI_KERNELS_IMGPROC_CONVOLUTION_CONVOLUTION_2D_GPU_H_
 
 #include <vector>
 #include "dali/core/convert.h"
@@ -257,7 +257,7 @@ struct Convolution2dGpu {
       int filter_vol = volume(filter_shape);
       int filter_size = filter_vol * sizeof(W);
       DALI_ENFORCE(filter_size <= shared_mem_limit,
-                   "Filter volume exceedes maximal available space available for CUDA kernel");
+                   "Filter volume exceedes maximal space available for CUDA kernel");
       int input_workspace_width = block_width + (s - 1) * c;
       int input_workspace_num_elements = input_workspace_width * (lanes + r - 1);
       int total_workspace_size = input_workspace_num_elements * sizeof(In) + filter_size;
@@ -305,4 +305,4 @@ struct Convolution2dGpu {
 }  // namespace kernels
 }  // namespace dali
 
-#endif  // DALI_KERNELS_IMGPROC_CONVOLUTION_CONVOLUTION2D_SIMPLE_CONVOLUTION_GPU_H_
+#endif  // DALI_KERNELS_IMGPROC_CONVOLUTION_CONVOLUTION_2D_GPU_H_
