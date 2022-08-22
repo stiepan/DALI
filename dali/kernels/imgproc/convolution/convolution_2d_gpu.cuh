@@ -147,8 +147,8 @@ DALI_DEVICE DALI_FORCEINLINE void shm_input_filter_product(const SampleDescT& sa
 
 template <typename SampleDescT>
 DALI_DEVICE DALI_FORCEINLINE void global_input_filter_product(const SampleDescT& sample_desc,
-                                                              const typename SampleDescT::In* in,
                                                               const typename SampleDescT::W* filter,
+                                                              const typename SampleDescT::In* in,
                                                               typename SampleDescT::Acc* acc,
                                                               int h_start, int w_start) {
   for (int s = 0; s < sample_desc.s; s++) {
