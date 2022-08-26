@@ -229,7 +229,7 @@ __global__ void conv2d(const SampleDescT* descs) {
 template <typename Out, typename In, typename W, bool has_channel_dim, bool has_sequence_dim>
 struct Convolution2dGpu {
   /* In fact, it computes a corellation not a convolution.
-  Flip filter in both dimensions for actual convoltion. */
+  Flip filter in both dimensions for actual convolution. */
 
   static constexpr int axes = 2;
   static constexpr int num_sequence_dim = static_cast<int>(has_sequence_dim);
