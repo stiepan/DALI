@@ -15,6 +15,7 @@
 #ifndef DALI_KERNELS_IMGPROC_CONVOLUTION_CONVOLUTION_2D_GPU_H_
 #define DALI_KERNELS_IMGPROC_CONVOLUTION_CONVOLUTION_2D_GPU_H_
 
+#include <limits>
 #include <vector>
 #include "dali/core/convert.h"
 #include "dali/core/cuda_utils.h"
@@ -38,8 +39,9 @@ struct SampleDesc {
   const In* __restrict__ in;
   const W* __restrict__ filter;
 
-  int f, h, w, c, wc, hwc;
-  int r, s, filter_vol;
+  int64_t hwc;
+  int wc, f, h, w, c;
+  int filter_vol, r, s;
   int filter_top_anchor, filter_left_anchor;
   int in_workspace_width, in_workspace_num_elements;
 };
@@ -232,6 +234,12 @@ struct Convolution2dGpu {
   static constexpr int lanes = 8;
   static constexpr int max_grid_height = 32;
   static constexpr int max_grid_width = 32;
+  static constexpr int max_grid_rows = max_grid_height * lanes;
+  static constexpr int max_grid_cols = max_grid_width * block_width;
+  static constexpr int max_sample_height =
+      std::numeric_limits<int>::max() / max_grid_rows * max_grid_rows;
+  static constexpr int max_sample_width =
+      std::numeric_limits<int>::max() / max_grid_cols * max_grid_cols;
 
   using SampleDescT = conv_2d::SampleDesc<Out, In, W, Intermediate, lanes>;
 
@@ -250,43 +258,15 @@ struct Convolution2dGpu {
     for (int sample_idx = 0; sample_idx < num_samples; sample_idx++) {
       const auto& in_out_shape = in_shapes[sample_idx];
       const auto& filter_shape = filter_shapes[sample_idx];
-      int f = has_sequence_dim ? in_out_shape[0] : 1;
-      int h = in_out_shape[num_sequence_dim], w = in_out_shape[num_sequence_dim + 1];
-      int c = has_channel_dim ? in_out_shape[num_sequence_dim + 2] : 1;
-      int r = filter_shape[0], s = filter_shape[1];
-      int filter_vol = volume(filter_shape);
-      int filter_size = filter_vol * sizeof(W);
-      DALI_ENFORCE(
-          filter_size <= shared_mem_limit,
-          make_string("Filter volume for sample of idx ", sample_idx,
-                      " exceedes maximal space available for CUDA kernel. Got filter of size: ",
-                      filter_size, "."));
-      int input_workspace_width = block_width + (s - 1) * c;
-      int input_workspace_num_elements = input_workspace_width * (lanes + r - 1);
-      int total_workspace_size = input_workspace_num_elements * sizeof(In) + filter_size;
-      if (total_workspace_size > shared_mem_limit || c > block_width) {
-        input_workspace_num_elements = input_workspace_width = 0;
-        total_workspace_size = filter_size;
-      }
-      max_width = std::max(max_width, w * c);
-      max_height = std::max(max_height, h);
-      max_total_workspace = std::max(max_total_workspace, total_workspace_size);
-      SampleDescT desc = {out.tensor_data(sample_idx),
-                          in.tensor_data(sample_idx),
-                          filters.tensor_data(sample_idx),
-                          f,
-                          h,
-                          w,
-                          c,
-                          w * c,
-                          h * w * c,
-                          r,
-                          s,
-                          filter_vol,
-                          -r / 2,
-                          -s / 2,
-                          input_workspace_width,
-                          input_workspace_num_elements};
+      int required_workspace;
+      auto desc = SetupSampleDesc(required_workspace, sample_idx, in_out_shape, filter_shape,
+                                  shared_mem_limit);
+      max_height = std::max(max_height, desc.h);
+      max_width = std::max(max_width, desc.wc);
+      max_total_workspace = std::max(max_total_workspace, required_workspace);
+      desc.out = out.tensor_data(sample_idx);
+      desc.in = in.tensor_data(sample_idx);
+      desc.filter = filters.tensor_data(sample_idx);
       samples_desc_.push_back(desc);
     }
     SampleDescT* descs_dev;
@@ -301,9 +281,93 @@ struct Convolution2dGpu {
     CUDA_CALL(cudaGetLastError());
   }
 
- private:
+  template <typename InShape, typename FilterShape>
+  SampleDescT SetupSampleDesc(int& required_worskapce, int sample_idx, const InShape& in_out_shape,
+                              const FilterShape& filter_shape, int shared_mem_limit) {
+    auto filter_vol = volume(filter_shape);
+    auto filter_size = filter_vol * sizeof(W);
+    DALI_ENFORCE(
+        filter_size <= shared_mem_limit,
+        make_string("Filter volume for sample of idx ", sample_idx,
+                    " exceedes maximal space available for CUDA kernel. Got filter of size: ",
+                    filter_size, "."));
+    int r = filter_shape[0], s = filter_shape[1];
+    int filter_top_anchor = -r / 2, filter_left_anchor = -s / 2;
+    auto f = has_sequence_dim ? in_out_shape[0] : 1;
+    auto h = in_out_shape[num_sequence_dim];
+    auto w = in_out_shape[num_sequence_dim + 1];
+    auto c = has_channel_dim ? in_out_shape[num_sequence_dim + 2] : 1;
+    auto wc = w * c;
+    auto hwc = h * wc;
+    ValidateSampleNumericLimits(sample_idx, r, s, filter_top_anchor, filter_left_anchor, f, h, wc,
+                                c);
+    int64_t input_workspace_width = block_width + (s - 1) * c;
+    int64_t input_workspace_num_elements = input_workspace_width * (lanes + r - 1);
+    int64_t total_workspace_size = input_workspace_num_elements * sizeof(In) + filter_size;
+    if (c > block_width || total_workspace_size > shared_mem_limit) {
+      input_workspace_num_elements = input_workspace_width = 0;
+      total_workspace_size = filter_size;
+    }
+    required_worskapce = total_workspace_size;
+    return {nullptr,
+            nullptr,
+            nullptr,
+            hwc,
+            static_cast<int>(wc),
+            static_cast<int>(f),
+            static_cast<int>(h),
+            static_cast<int>(w),
+            static_cast<int>(c),
+            static_cast<int>(filter_vol),
+            r,
+            s,
+            filter_top_anchor,
+            filter_left_anchor,
+            static_cast<int>(input_workspace_width),
+            static_cast<int>(input_workspace_num_elements)};
+  }
+
+  template <typename FilterExtent, typename SampleExtent>
+  void ValidateSampleNumericLimits(int sample_idx, FilterExtent r, FilterExtent s,
+                                   FilterExtent filter_top_anchor, FilterExtent filter_left_anchor,
+                                   SampleExtent f, SampleExtent h, SampleExtent wc,
+                                   SampleExtent c) {
+    DALI_ENFORCE(
+        f <= std::numeric_limits<int>::max(),
+        make_string("Number of frames for sample of idx ", sample_idx, " exceedes the limit of ",
+                    std::numeric_limits<int>::max(), ". Got: ", f, "."));
+    DALI_ENFORCE(h <= max_sample_height,
+                 make_string("The height of sample of idx ", sample_idx, " exceedes the limit of ",
+                             max_sample_height, ". Got: ", h, "."));
+    DALI_ENFORCE(wc <= max_sample_width,
+                 make_string("The total width and number of channels in sample of idx ", sample_idx,
+                             " exceedes the limit of ", max_sample_width, ". Got: ", wc, "."));
+    auto height_radious = h + r + filter_top_anchor - 2;
+    DALI_ENFORCE(
+        height_radious <= std::numeric_limits<int>::max(),
+        make_string("The combined height of the sample and filter radious for sample of idx ",
+                    sample_idx, " exceedes the limit of ", std::numeric_limits<int>::max(),
+                    ". Got: ", height_radious, "."));
+    auto width_radious = wc - 1 + (s - 1 + filter_left_anchor) * c;
+    DALI_ENFORCE(
+        width_radious <= std::numeric_limits<int>::max(),
+        make_string("The combined width, number of channels and filter radious for sample of idx ",
+                    sample_idx, " exceedes the limit of ", std::numeric_limits<int>::max(),
+                    ". Got: ", width_radious, "."));
+  }
+
   std::vector<SampleDescT> samples_desc_;
 };
+
+
+// WAR c++14 odr usage issue (make_string in error message takes them as l-values)
+// it should be unnecessary in c++17
+template <typename Out, typename In, typename W, bool has_channel_dim, bool has_sequence_dim>
+constexpr int Convolution2dGpu<Out, In, W, has_channel_dim, has_sequence_dim>::max_sample_height;
+
+template <typename Out, typename In, typename W, bool has_channel_dim, bool has_sequence_dim>
+constexpr int Convolution2dGpu<Out, In, W, has_channel_dim, has_sequence_dim>::max_sample_width;
+
 
 }  // namespace kernels
 }  // namespace dali
