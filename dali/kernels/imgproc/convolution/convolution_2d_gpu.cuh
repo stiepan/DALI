@@ -256,8 +256,11 @@ struct Convolution2dGpu {
       int r = filter_shape[0], s = filter_shape[1];
       int filter_vol = volume(filter_shape);
       int filter_size = filter_vol * sizeof(W);
-      DALI_ENFORCE(filter_size <= shared_mem_limit,
-                   "Filter volume exceedes maximal space available for CUDA kernel");
+      DALI_ENFORCE(
+          filter_size <= shared_mem_limit,
+          make_string("Filter volume for sample of idx ", sample_idx,
+                      " exceedes maximal space available for CUDA kernel. Got filter of size: ",
+                      filter_size, "."));
       int input_workspace_width = block_width + (s - 1) * c;
       int input_workspace_num_elements = input_workspace_width * (lanes + r - 1);
       int total_workspace_size = input_workspace_num_elements * sizeof(In) + filter_size;
