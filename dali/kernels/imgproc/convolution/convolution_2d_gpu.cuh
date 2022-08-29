@@ -44,7 +44,7 @@ struct SampleDesc {
     int wc, f, h, w, c;
     int filter_vol, r, s;
     int filter_top_anchor, filter_left_anchor;
-    int in_workspace_width, in_workspace_num_elements;
+    int in_workspace_width, filter_offset;
   } shape;
 };
 
@@ -205,10 +205,10 @@ __global__ void conv2d(const SampleDescT* descs) {
   extern __shared__ char shm[];
   auto sample_desc = descs[blockIdx.z];
   In* in_workspace = reinterpret_cast<In*>(shm);
-  W* filter = reinterpret_cast<W*>(in_workspace + sample_desc.shape.in_workspace_num_elements);
+  W* filter = reinterpret_cast<W*>(shm + sample_desc.shape.filter_offset);
   load_filter_to_shm(sample_desc, filter);
   __syncthreads();
-  if (sample_desc.shape.in_workspace_num_elements) {
+  if (sample_desc.shape.filter_offset) {
     stride_grid(
         [&filter, &in_workspace](const SampleDescT& sample_desc, const In* in, Acc* acc,
                                  int h_start, int w_start) {
@@ -312,9 +312,10 @@ struct Convolution2dGpu {
                                 c);
     int64_t input_workspace_width = block_width + (s - 1) * c;
     int64_t input_workspace_num_elements = input_workspace_width * (lanes + r - 1);
-    int64_t total_workspace_size = input_workspace_num_elements * sizeof(In) + filter_size;
+    int64_t filter_offset = align_up(input_workspace_num_elements * sizeof(In), sizeof(W));
+    int64_t total_workspace_size = filter_offset + filter_size;
     if (c > block_width || total_workspace_size > shared_mem_limit) {
-      input_workspace_num_elements = input_workspace_width = 0;
+      filter_offset = input_workspace_width = 0;
       total_workspace_size = filter_size;
     }
     required_worskapce = total_workspace_size;
@@ -330,7 +331,7 @@ struct Convolution2dGpu {
             filter_top_anchor,
             filter_left_anchor,
             static_cast<int>(input_workspace_width),
-            static_cast<int>(input_workspace_num_elements)};
+            static_cast<int>(filter_offset)};
   }
 
   template <typename FilterExtent, typename SampleExtent>
