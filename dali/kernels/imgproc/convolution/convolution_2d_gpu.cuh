@@ -236,7 +236,6 @@ struct Convolution2dGpu {
   static constexpr int num_channels_dim = static_cast<int>(has_channel_dim);
   static constexpr int ndim = num_sequence_dim + axes + num_channels_dim;
   using Intermediate = decltype(std::declval<W>() * std::declval<In>());
-  static_assert(std::is_same<Intermediate, float>::value);
 
   static constexpr int block_width = 128;
   static constexpr int lanes = 8;
