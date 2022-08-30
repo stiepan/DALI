@@ -188,7 +188,7 @@ DALI_DEVICE DALI_FORCEINLINE void stride_grid(ConvF&& convf, const SampleDescT& 
          h_start += gridDim.y * lanes) {
       for (int w_start = blockDim.x * blockIdx.x; w_start < sample_desc.shape.wc;
            w_start += gridDim.x * blockDim.x) {
-        float acc[lanes] = {};
+        typename SampleDescT::Acc acc[lanes] = {};
         convf(sample_desc, in, acc, h_start, w_start);
         store_acc_in_global_output(sample_desc, out, acc, h_start, w_start);
       }
