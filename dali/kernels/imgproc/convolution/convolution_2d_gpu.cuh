@@ -28,6 +28,17 @@ namespace kernels {
 
 namespace conv_2d {
 
+enum class BorderMode {
+  Pad,
+  Reflect101
+};
+
+template <typename In>
+struct BorderSetup {
+  BorderMode border_mode = BorderMode::Reflect101;
+  In pad = 0;
+};
+
 struct ShapeDesc {
   int64_t hwc;
   int wc, f, h, w, c;
@@ -97,7 +108,7 @@ struct InLoaderBorderReflect101 {
   }
 };
 
-template <typename In, bool degenerated_extents>
+template <typename In>
 struct InLoaderPad {
   DALI_HOST_DEV DALI_FORCEINLINE int remap_height(int idx, const ShapeDesc& sample_shape) const {
     return idx;
@@ -115,7 +126,6 @@ struct InLoaderPad {
     return in[y * static_cast<int64_t>(sample_shape.wc) + x];
   }
 
- protected:
   In pad_;
 };
 
@@ -295,7 +305,8 @@ struct Convolution2dGpu {
 
   void Run(KernelContext& ctx, const TensorListView<StorageGPU, Out, ndim>& out,
            const TensorListView<StorageGPU, const In, ndim>& in,
-           const TensorListView<StorageGPU, const W, axes>& filters) {
+           const TensorListView<StorageGPU, const W, axes>& filters,
+           const conv_2d::BorderSetup<In>& border_setup = {}) {
     auto num_samples = in.shape.num_samples();
 
     samples_desc_.clear();
@@ -305,19 +316,21 @@ struct Convolution2dGpu {
 
     int shared_mem_limit = GetSharedMemPerBlock();
     int max_width = 0, max_height = 0, max_total_workspace = 0;
+    bool any_has_degenerated_extents = false;
     for (int sample_idx = 0; sample_idx < num_samples; sample_idx++) {
       const auto& in_out_shape = in_shapes[sample_idx];
       const auto& filter_shape = filter_shapes[sample_idx];
       int required_workspace;
-      auto shape_desc = SetupSampleDesc(required_workspace, sample_idx, in_out_shape, filter_shape,
-                                        shared_mem_limit);
+      bool has_degenerated_extents;
+      auto shape_desc = SetupSampleDesc(required_workspace, has_degenerated_extents, sample_idx,
+                                        in_out_shape, filter_shape, shared_mem_limit);
       max_height = std::max(max_height, shape_desc.h);
       max_width = std::max(max_width, shape_desc.wc);
+      any_has_degenerated_extents |= has_degenerated_extents;
       max_total_workspace = std::max(max_total_workspace, required_workspace);
       samples_desc_.push_back({out.tensor_data(sample_idx), in.tensor_data(sample_idx),
                                filters.tensor_data(sample_idx), shape_desc});
     }
-    conv_2d::InLoaderBorderReflect101<In, false> loader_reflect_101;
     SampleDescT* descs_dev;
     std::tie(descs_dev) = ctx.scratchpad->ToContiguousGPU(ctx.gpu.stream, samples_desc_);
     int num_blocks_h = div_ceil(max_height, lanes);
@@ -326,16 +339,31 @@ struct Convolution2dGpu {
     num_blocks_w = std::min(num_blocks_w, max_grid_width);
     dim3 grid(num_blocks_w, num_blocks_h, num_samples);
     dim3 block(block_width, 1, 1);
-    conv_2d::conv2d<<<grid, block, max_total_workspace, ctx.gpu.stream>>>(descs_dev,
-                                                                          loader_reflect_101);
-    CUDA_CALL(cudaGetLastError());
+    SetupBorderAndRun(border_setup, any_has_degenerated_extents, [&](auto&& loader) {
+      conv_2d::conv2d<<<grid, block, max_total_workspace, ctx.gpu.stream>>>(descs_dev, loader);
+      CUDA_CALL(cudaGetLastError());
+    });
   }
 
  protected:
+  template <typename RunKernel>
+  void SetupBorderAndRun(const conv_2d::BorderSetup<In>& border_setup, bool has_degenerated_extents,
+                         RunKernel&& run_kernel) {
+    if (border_setup.border_mode == conv_2d::BorderMode::Reflect101) {
+      BOOL_SWITCH(has_degenerated_extents, HasDegeneratedExtents,
+                  (conv_2d::InLoaderBorderReflect101<In, HasDegeneratedExtents> loader{};
+                   run_kernel(std::move(loader));));  // NOLINT
+    } else {
+      assert(border_setup.border_mode == conv_2d::BorderMode::Pad);
+      conv_2d::InLoaderPad<In> loader{border_setup.pad};
+      run_kernel(std::move(loader));
+    }
+  }
+
   template <typename InShape, typename FilterShape>
-  conv_2d::ShapeDesc SetupSampleDesc(int& required_worskapce, int sample_idx,
-                                     const InShape& in_out_shape, const FilterShape& filter_shape,
-                                     int shared_mem_limit) {
+  conv_2d::ShapeDesc SetupSampleDesc(int& required_worskapce, bool& has_degenerated_extents,
+                                     int sample_idx, const InShape& in_out_shape,
+                                     const FilterShape& filter_shape, int shared_mem_limit) {
     auto filter_vol = volume(filter_shape);
     auto filter_size = filter_vol * sizeof(W);
     DALI_ENFORCE(
@@ -362,6 +390,7 @@ struct Convolution2dGpu {
       total_workspace_size = filter_size;
     }
     required_worskapce = total_workspace_size;
+    has_degenerated_extents = h == 1 || w == 1;
     return {hwc,
             static_cast<int>(wc),
             static_cast<int>(f),
