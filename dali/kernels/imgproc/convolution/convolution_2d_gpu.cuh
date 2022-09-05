@@ -97,12 +97,33 @@ struct InLoaderBorderReflect101 {
   }
 };
 
+template <typename In, bool degenerated_extents>
+struct InLoaderPad {
+  DALI_HOST_DEV DALI_FORCEINLINE int remap_height(int idx, const ShapeDesc& sample_shape) const {
+    return idx;
+  }
+
+  DALI_HOST_DEV DALI_FORCEINLINE int remap_width(int idx, const ShapeDesc& sample_shape) const {
+    return idx;
+  }
+
+  DALI_HOST_DEV DALI_FORCEINLINE In load(const In __restrict__* in, int y, int x,
+                                         const ShapeDesc& sample_shape) const {
+    if (y < 0 || x < 0 || x >= sample_shape.wc || y >= sample_shape.h) {
+      return pad_;
+    }
+    return in[y * static_cast<int64_t>(sample_shape.wc) + x];
+  }
+
+ protected:
+  In pad_;
+};
+
 template <typename SampleDescT, typename InLoader>
-DALI_DEVICE DALI_FORCEINLINE void load_input_to_shm(const SampleDescT& sample_desc,
-                                                    const InLoader& in_loader,
-                                                    const typename SampleDescT::In* in,
-                                                    typename SampleDescT::In* in_workspace,
-                                                    int y_start, int x_start) {
+DALI_DEVICE DALI_FORCEINLINE void load_input_to_shm(
+    const SampleDescT& sample_desc, const InLoader& in_loader,
+    const typename SampleDescT::In* __restrict__ in,
+    typename SampleDescT::In* __restrict__ in_workspace, int y_start, int x_start) {
   for (int w = threadIdx.x; w < sample_desc.shape.in_workspace_width; w += blockDim.x) {
     auto global_x = in_loader.remap_width(
         x_start + w + sample_desc.shape.filter_left_anchor * sample_desc.shape.c,
@@ -125,7 +146,7 @@ DALI_DEVICE DALI_FORCEINLINE void load_input_to_shm(const SampleDescT& sample_de
 
 template <typename SampleDescT>
 DALI_DEVICE DALI_FORCEINLINE void load_filter_to_shm(const SampleDescT& sample_desc,
-                                                     typename SampleDescT::W* filter) {
+                                                     typename SampleDescT::W* __restrict__ filter) {
   auto* global_filter = sample_desc.filter;
   for (int i = threadIdx.x; i < sample_desc.shape.filter_vol; i += blockDim.x) {
     filter[i] = global_filter[i];
@@ -133,10 +154,9 @@ DALI_DEVICE DALI_FORCEINLINE void load_filter_to_shm(const SampleDescT& sample_d
 }
 
 template <typename SampleDescT>
-DALI_DEVICE DALI_FORCEINLINE void store_acc_in_global_output(const SampleDescT& sample_desc,
-                                                             typename SampleDescT::Out* out,
-                                                             const typename SampleDescT::Acc* acc,
-                                                             int y_start, int x_start) {
+DALI_DEVICE DALI_FORCEINLINE void store_acc_in_global_output(
+    const SampleDescT& sample_desc, typename SampleDescT::Out* __restrict__ out,
+    const typename SampleDescT::Acc* __restrict__ acc, int y_start, int x_start) {
   int reflect_dim_idx = x_start + threadIdx.x;
   if (reflect_dim_idx < sample_desc.shape.wc) {
 #pragma unroll
@@ -151,13 +171,12 @@ DALI_DEVICE DALI_FORCEINLINE void store_acc_in_global_output(const SampleDescT& 
 }
 
 template <typename SampleDescT, typename InLoader>
-DALI_DEVICE DALI_FORCEINLINE void shm_input_filter_product(const SampleDescT& sample_desc,
-                                                           const InLoader& in_loader,
-                                                           const typename SampleDescT::W* filter,
-                                                           const typename SampleDescT::In* in,
-                                                           typename SampleDescT::In* in_workspace,
-                                                           typename SampleDescT::Acc* acc,
-                                                           int y_start, int x_start) {
+DALI_DEVICE DALI_FORCEINLINE void shm_input_filter_product(
+    const SampleDescT& sample_desc, const InLoader& in_loader,
+    const typename SampleDescT::W* __restrict__ filter,
+    const typename SampleDescT::In* __restrict__ in,
+    typename SampleDescT::In* __restrict__ in_workspace,
+    typename SampleDescT::Acc* __restrict__ acc, int y_start, int x_start) {
   __syncthreads();
   load_input_to_shm(sample_desc, in_loader, in, in_workspace, y_start, x_start);
   __syncthreads();
@@ -176,12 +195,11 @@ DALI_DEVICE DALI_FORCEINLINE void shm_input_filter_product(const SampleDescT& sa
 }
 
 template <typename SampleDescT, typename InLoader>
-DALI_DEVICE DALI_FORCEINLINE void global_input_filter_product(const SampleDescT& sample_desc,
-                                                              const InLoader& in_loader,
-                                                              const typename SampleDescT::W* filter,
-                                                              const typename SampleDescT::In* in,
-                                                              typename SampleDescT::Acc* acc,
-                                                              int y_start, int x_start) {
+DALI_DEVICE DALI_FORCEINLINE void global_input_filter_product(
+    const SampleDescT& sample_desc, const InLoader& in_loader,
+    const typename SampleDescT::W* __restrict__ filter,
+    const typename SampleDescT::In* __restrict__ in, typename SampleDescT::Acc* __restrict__ acc,
+    int y_start, int x_start) {
   for (int s = 0; s < sample_desc.shape.s; s++) {
     auto global_x = in_loader.remap_width(
         x_start + threadIdx.x + (sample_desc.shape.filter_left_anchor + s) * sample_desc.shape.c,
@@ -221,7 +239,7 @@ DALI_DEVICE DALI_FORCEINLINE void stride_grid(ConvF&& convf, const SampleDescT& 
 }
 
 template <typename SampleDescT, typename InLoader>
-__global__ void conv2d(const SampleDescT* descs, const InLoader in_loader) {
+__global__ void conv2d(const SampleDescT* __restrict__ descs, const InLoader in_loader) {
   using In = typename SampleDescT::In;
   using W = typename SampleDescT::W;
   using Acc = typename SampleDescT::Acc;
