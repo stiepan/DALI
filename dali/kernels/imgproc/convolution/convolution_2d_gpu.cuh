@@ -44,7 +44,7 @@ struct ShapeDesc {
   int wc, f, h, w, c;
   int filter_vol, r, s;
   int filter_top_anchor, filter_left_anchor;
-  int in_workspace_width, filter_offset;
+  int in_workspace_width, in_workspace_size, filter_workspace_size;
 };
 
 template <typename Out_, typename In_, typename W_, typename Acc_, int lanes_>
@@ -257,10 +257,10 @@ __global__ void conv2d(const SampleDescT* __restrict__ descs, const InLoader in_
   extern __shared__ char shm[];
   auto sample_desc = descs[blockIdx.z];
   In* in_workspace = reinterpret_cast<In*>(shm);
-  W* filter = reinterpret_cast<W*>(shm + sample_desc.shape.filter_offset);
+  W* filter = reinterpret_cast<W*>(shm + sample_desc.shape.in_workspace_size);
   load_filter_to_shm(sample_desc, filter);
   __syncthreads();
-  if (sample_desc.shape.filter_offset) {
+  if (sample_desc.shape.in_workspace_size) {
     stride_grid(
         [&in_loader, &filter, &in_workspace](const SampleDescT& sample_desc, const In* in, Acc* acc,
                                              int y_start, int x_start) {
@@ -339,24 +339,24 @@ struct Convolution2dGpu {
     num_blocks_w = std::min(num_blocks_w, max_grid_width);
     dim3 grid(num_blocks_w, num_blocks_h, num_samples);
     dim3 block(block_width, 1, 1);
-    SetupBorderAndRun(border_setup, any_has_degenerated_extents, [&](auto&& loader) {
+    RunKernel(border_setup, any_has_degenerated_extents, [&](auto&& loader) {
       conv_2d::conv2d<<<grid, block, max_total_workspace, ctx.gpu.stream>>>(descs_dev, loader);
       CUDA_CALL(cudaGetLastError());
     });
   }
 
  protected:
-  template <typename RunKernel>
-  void SetupBorderAndRun(const conv_2d::BorderSetup<In>& border_setup, bool has_degenerated_extents,
-                         RunKernel&& run_kernel) {
+  template <typename KernelLauncher>
+  void RunKernel(const conv_2d::BorderSetup<In>& border_setup, bool has_degenerated_extents,
+                 KernelLauncher&& launch_kernel) {
     if (border_setup.border_mode == conv_2d::BorderMode::Reflect101) {
       BOOL_SWITCH(has_degenerated_extents, HasDegeneratedExtents,
                   (conv_2d::InLoaderBorderReflect101<In, HasDegeneratedExtents> loader{};
-                   run_kernel(std::move(loader));));  // NOLINT
+                   launch_kernel(std::move(loader));));  // NOLINT
     } else {
       assert(border_setup.border_mode == conv_2d::BorderMode::Pad);
       conv_2d::InLoaderPad<In> loader{border_setup.pad};
-      run_kernel(std::move(loader));
+      launch_kernel(std::move(loader));
     }
   }
 
@@ -365,29 +365,33 @@ struct Convolution2dGpu {
                                      int sample_idx, const InShape& in_out_shape,
                                      const FilterShape& filter_shape, int shared_mem_limit) {
     auto filter_vol = volume(filter_shape);
-    auto filter_size = filter_vol * sizeof(W);
-    DALI_ENFORCE(
-        filter_size <= shared_mem_limit,
-        make_string("Filter volume for sample of idx ", sample_idx,
-                    " exceedes maximal space available for CUDA kernel. Got filter of size: ",
-                    filter_size, "."));
-    int r = filter_shape[0], s = filter_shape[1];
-    int filter_top_anchor = -r / 2, filter_left_anchor = -s / 2;
+    auto r = filter_shape[0];
+    auto s = filter_shape[1];
+    auto filter_top_anchor = -r / 2;
+    auto filter_left_anchor = -s / 2;
     auto f = has_sequence_dim ? in_out_shape[0] : 1;
     auto h = in_out_shape[num_sequence_dim];
     auto w = in_out_shape[num_sequence_dim + 1];
     auto c = has_channel_dim ? in_out_shape[num_sequence_dim + 2] : 1;
     auto wc = w * c;
     auto hwc = h * wc;
-    ValidateSampleNumericLimits(sample_idx, r, s, filter_top_anchor, filter_left_anchor, f, h, wc,
-                                c);
-    int64_t input_workspace_width = block_width + (s - 1) * c;
-    int64_t input_workspace_num_elements = input_workspace_width * (lanes + r - 1);
-    int64_t filter_offset = align_up(input_workspace_num_elements * sizeof(In), sizeof(W));
-    int64_t total_workspace_size = filter_offset + filter_size;
+    ValidateSampleNumericLimits(sample_idx, r, s, filter_vol, filter_top_anchor, filter_left_anchor,
+                                f, h, wc, c);
+    auto filter_workspace_size = filter_vol * sizeof(W);
+    if (2 * filter_vol <= block_width || filter_workspace_size > shared_mem_limit) {
+      filter_workspace_size = 0;
+    }
+    auto in_workspace_width = block_width + (s - 1) * c;
+    auto in_workspace_num_elements = in_workspace_width * (lanes + r - 1);
+    if (in_workspace_width > std::numeric_limits<int>::max() ||
+        in_workspace_num_elements > std::numeric_limits<int>::max()) {
+      in_workspace_width = in_workspace_num_elements = 0;
+    }
+    auto in_workspace_size = align_up(in_workspace_num_elements * sizeof(In), sizeof(W));
+    auto total_workspace_size = in_workspace_size + filter_workspace_size;
     if (c > block_width || total_workspace_size > shared_mem_limit) {
-      filter_offset = input_workspace_width = 0;
-      total_workspace_size = filter_size;
+      in_workspace_size = in_workspace_width = 0;
+      total_workspace_size = filter_workspace_size;
     }
     required_worskapce = total_workspace_size;
     has_degenerated_extents = h == 1 || w == 1;
@@ -398,19 +402,22 @@ struct Convolution2dGpu {
             static_cast<int>(w),
             static_cast<int>(c),
             static_cast<int>(filter_vol),
-            r,
-            s,
-            filter_top_anchor,
-            filter_left_anchor,
-            static_cast<int>(input_workspace_width),
-            static_cast<int>(filter_offset)};
+            static_cast<int>(r),
+            static_cast<int>(s),
+            static_cast<int>(filter_top_anchor),
+            static_cast<int>(filter_left_anchor),
+            static_cast<int>(in_workspace_width),
+            static_cast<int>(in_workspace_size),
+            static_cast<int>(filter_workspace_size)};
   }
 
-  template <typename FilterExtent, typename SampleExtent>
-  void ValidateSampleNumericLimits(int sample_idx, FilterExtent r, FilterExtent s,
-                                   FilterExtent filter_top_anchor, FilterExtent filter_left_anchor,
-                                   SampleExtent f, SampleExtent h, SampleExtent wc,
-                                   SampleExtent c) {
+  void ValidateSampleNumericLimits(int sample_idx, int64_t r, int64_t s, int64_t filter_vol,
+                                   int64_t filter_top_anchor, int64_t filter_left_anchor, int64_t f,
+                                   int64_t h, int64_t wc, int64_t c) {
+    DALI_ENFORCE(
+        filter_vol <= std::numeric_limits<int>::max(),
+        make_string("Volume of filter for sample of idx ", sample_idx, " exceedes the limit of ",
+                    std::numeric_limits<int>::max(), ". Got: ", filter_vol, "."));
     DALI_ENFORCE(
         f <= std::numeric_limits<int>::max(),
         make_string("Number of frames for sample of idx ", sample_idx, " exceedes the limit of ",
@@ -418,18 +425,18 @@ struct Convolution2dGpu {
     DALI_ENFORCE(h <= max_sample_height,
                  make_string("The height of sample of idx ", sample_idx, " exceedes the limit of ",
                              max_sample_height, ". Got: ", h, "."));
-    DALI_ENFORCE(wc <= max_sample_width,
+    DALI_ENFORCE(0 <= wc && wc <= max_sample_width,
                  make_string("The total width and number of channels in sample of idx ", sample_idx,
                              " exceedes the limit of ", max_sample_width, ". Got: ", wc, "."));
     auto height_radious = h + r + filter_top_anchor - 2;
     DALI_ENFORCE(
-        height_radious <= std::numeric_limits<int>::max(),
+        0 <= height_radious && height_radious <= std::numeric_limits<int>::max(),
         make_string("The combined height of the sample and filter radious for sample of idx ",
                     sample_idx, " exceedes the limit of ", std::numeric_limits<int>::max(),
                     ". Got: ", height_radious, "."));
     auto width_radious = wc - 1 + (s - 1 + filter_left_anchor) * c;
     DALI_ENFORCE(
-        width_radious <= std::numeric_limits<int>::max(),
+        0 <= width_radious && width_radious <= std::numeric_limits<int>::max(),
         make_string("The combined width, number of channels and filter radious for sample of idx ",
                     sample_idx, " exceedes the limit of ", std::numeric_limits<int>::max(),
                     ". Got: ", width_radious, "."));
