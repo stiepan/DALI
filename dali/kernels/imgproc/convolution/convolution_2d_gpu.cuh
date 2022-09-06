@@ -133,7 +133,7 @@ template <typename SampleDescT>
 struct ShmFilterLoader {
   using W = typename SampleDescT::W;
 
-  DALI_DEVICE DALI_FORCEINLINE void setup(const SampleDescT& sample_desc, char* shm) {
+  DALI_DEVICE DALI_FORCEINLINE ShmFilterLoader(const SampleDescT& sample_desc, char* shm) {
     filter_ = reinterpret_cast<W*>(shm + sample_desc.shape.in_workspace_size);
     auto* global_filter = sample_desc.filter;
     for (int i = threadIdx.x; i < sample_desc.shape.filter_vol; i += blockDim.x) {
@@ -154,7 +154,7 @@ template <typename SampleDescT>
 struct DirectFilterLoader {
   using W = typename SampleDescT::W;
 
-  DALI_DEVICE DALI_FORCEINLINE void setup(const SampleDescT& sample_desc) {
+  DALI_DEVICE DALI_FORCEINLINE DirectFilterLoader(const SampleDescT& sample_desc) {
     filter_ = sample_desc.filter;
   }
 
@@ -165,82 +165,106 @@ struct DirectFilterLoader {
   const W* filter_;
 };
 
-template <typename SampleDescT, typename InLoader>
-DALI_DEVICE DALI_FORCEINLINE void load_input_to_shm(
-    const SampleDescT& sample_desc, const InLoader& in_loader,
-    const typename SampleDescT::In* __restrict__ in,
-    typename SampleDescT::In* __restrict__ in_workspace, int y_start, int x_start) {
-  for (int w = threadIdx.x; w < sample_desc.shape.in_workspace_width; w += blockDim.x) {
-    auto global_x = in_loader.remap_width(
-        x_start + w + sample_desc.shape.filter_left_anchor * sample_desc.shape.c,
-        sample_desc.shape);
-    auto load_row = [&](int h) {
-      int global_y = in_loader.remap_height(y_start + h + sample_desc.shape.filter_top_anchor,
-                                            sample_desc.shape);
-      in_workspace[h * sample_desc.shape.in_workspace_width + w] =
-          in_loader.load(in, global_y, global_x, sample_desc.shape);
-    };
-#pragma unroll
-    for (int h = 0; h < SampleDescT::lanes; h++) {
-      load_row(h);
-    }
-    for (int h = SampleDescT::lanes; h < SampleDescT::lanes + sample_desc.shape.r - 1; h++) {
-      load_row(h);
-    }
-  }
-}
+template <typename SampleDescT, typename Inloader, typename FilterLoader>
+struct ShmInputConv {
+  using In = typename SampleDescT::In;
+  using Acc = typename SampleDescT::Acc;
 
-template <typename SampleDescT, typename InLoader, typename FilterLoader>
-DALI_DEVICE DALI_FORCEINLINE void shm_input_filter_product(
-    const SampleDescT& sample_desc, const InLoader& in_loader, const FilterLoader& filter_loader,
-    const typename SampleDescT::In* __restrict__ in,
-    typename SampleDescT::In* __restrict__ in_workspace,
-    typename SampleDescT::Acc* __restrict__ acc, int y_start, int x_start) {
-  __syncthreads();
-  load_input_to_shm(sample_desc, in_loader, in, in_workspace, y_start, x_start);
-  __syncthreads();
-  for (int s = 0; s < sample_desc.shape.s; s++) {
-    int inp_wc = threadIdx.x + s * sample_desc.shape.c;
-    for (int r = 0; r < sample_desc.shape.r; r++) {
-      auto filter_coef = filter_loader.load(r * sample_desc.shape.s + s);
+  DALI_DEVICE DALI_FORCEINLINE ShmInputConv(const SampleDescT& sample_desc,
+                                            const Inloader& in_loader,
+                                            const FilterLoader& filter_loader, In* in_workspace)
+      : sample_desc{sample_desc},
+        in_loader{in_loader},
+        filter_loader{filter_loader},
+        in_workspace{in_workspace} {}
+
+  DALI_DEVICE DALI_FORCEINLINE void compute(Acc* __restrict__ acc, const In* __restrict__ in,
+                                            int y_start, int x_start) const {
+    __syncthreads();
+    load_input_to_shm(in, y_start, x_start);
+    __syncthreads();
+    for (int s = 0; s < sample_desc.shape.s; s++) {
+      int inp_wc = threadIdx.x + s * sample_desc.shape.c;
+      for (int r = 0; r < sample_desc.shape.r; r++) {
+        auto filter_coef = filter_loader.load(r * sample_desc.shape.s + s);
 #pragma unroll
-      for (int lane = 0; lane < SampleDescT::lanes; lane++) {
-        int inp_h = lane + r;
-        auto in_val = in_workspace[inp_h * sample_desc.shape.in_workspace_width + inp_wc];
-        acc[lane] += in_val * filter_coef;
+        for (int lane = 0; lane < SampleDescT::lanes; lane++) {
+          int inp_h = lane + r;
+          auto in_val = in_workspace[inp_h * sample_desc.shape.in_workspace_width + inp_wc];
+          acc[lane] += in_val * filter_coef;
+        }
       }
     }
   }
-}
 
-template <typename SampleDescT, typename InLoader, typename FilterLoader>
-DALI_DEVICE DALI_FORCEINLINE void global_input_filter_product(
-    const SampleDescT& sample_desc, const InLoader& in_loader, const FilterLoader& filter_loader,
-    const typename SampleDescT::In* __restrict__ in, typename SampleDescT::Acc* __restrict__ acc,
-    int y_start, int x_start) {
-  for (int s = 0; s < sample_desc.shape.s; s++) {
-    auto global_x = in_loader.remap_width(
-        x_start + threadIdx.x + (sample_desc.shape.filter_left_anchor + s) * sample_desc.shape.c,
-        sample_desc.shape);
-    for (int r = 0; r < sample_desc.shape.r; r++) {
-      auto filter_coef = filter_loader.load(r * sample_desc.shape.s + s);
-      // Even without shm, using `lanes` speeds up the kernel by reducing
-      // the cost of nested loops arithmetic per single output value
+  DALI_DEVICE DALI_FORCEINLINE void load_input_to_shm(const In* __restrict__ in, int y_start,
+                                                      int x_start) const {
+    for (int w = threadIdx.x; w < sample_desc.shape.in_workspace_width; w += blockDim.x) {
+      auto global_x = in_loader.remap_width(
+          x_start + w + sample_desc.shape.filter_left_anchor * sample_desc.shape.c,
+          sample_desc.shape);
+      auto load_row = [&](int h) {
+        int global_y = in_loader.remap_height(y_start + h + sample_desc.shape.filter_top_anchor,
+                                              sample_desc.shape);
+        in_workspace[h * sample_desc.shape.in_workspace_width + w] =
+            in_loader.load(in, global_y, global_x, sample_desc.shape);
+      };
 #pragma unroll
-      for (int lane = 0; lane < SampleDescT::lanes; lane++) {
-        auto global_y = in_loader.remap_height(
-            y_start + lane + r + sample_desc.shape.filter_top_anchor, sample_desc.shape);
-        auto in_val = in_loader.load(in, global_y, global_x, sample_desc.shape);
-        acc[lane] += in_val * filter_coef;
+      for (int h = 0; h < SampleDescT::lanes; h++) {
+        load_row(h);
+      }
+      for (int h = SampleDescT::lanes; h < SampleDescT::lanes + sample_desc.shape.r - 1; h++) {
+        load_row(h);
       }
     }
   }
-}
+
+  const SampleDescT& sample_desc;
+  const Inloader& in_loader;
+  const FilterLoader& filter_loader;
+  In* in_workspace;
+};
+
+template <typename SampleDescT, typename Inloader, typename FilterLoader>
+struct DirectInputConv {
+  using Acc = typename SampleDescT::Acc;
+  using In = typename SampleDescT::In;
+
+  DALI_DEVICE DALI_FORCEINLINE DirectInputConv(const SampleDescT& sample_desc,
+                                               const Inloader& in_loader,
+                                               const FilterLoader& filter_loader)
+      : sample_desc{sample_desc}, in_loader{in_loader}, filter_loader{filter_loader} {}
+
+  DALI_DEVICE DALI_FORCEINLINE void compute(Acc* __restrict__ acc, const In* __restrict__ in,
+                                            int y_start, int x_start) const {
+    for (int s = 0; s < sample_desc.shape.s; s++) {
+      auto global_x = in_loader.remap_width(
+          x_start + threadIdx.x + (sample_desc.shape.filter_left_anchor + s) * sample_desc.shape.c,
+          sample_desc.shape);
+      for (int r = 0; r < sample_desc.shape.r; r++) {
+        auto filter_coef = filter_loader.load(r * sample_desc.shape.s + s);
+        // Even without shm, using `lanes` speeds up the kernel by reducing
+        // the cost of nested loops arithmetic per single output value
+#pragma unroll
+        for (int lane = 0; lane < SampleDescT::lanes; lane++) {
+          auto global_y = in_loader.remap_height(
+              y_start + lane + r + sample_desc.shape.filter_top_anchor, sample_desc.shape);
+          auto in_val = in_loader.load(in, global_y, global_x, sample_desc.shape);
+          acc[lane] += in_val * filter_coef;
+        }
+      }
+    }
+  }
+
+  const SampleDescT& sample_desc;
+  const Inloader& in_loader;
+  const FilterLoader& filter_loader;
+};
 
 template <typename SampleDescT>
 DALI_DEVICE DALI_FORCEINLINE void store_acc_in_global_output(
-    const SampleDescT& sample_desc, typename SampleDescT::Out* __restrict__ out,
-    const typename SampleDescT::Acc* __restrict__ acc, int y_start, int x_start) {
+    typename SampleDescT::Out* __restrict__ out, const typename SampleDescT::Acc* __restrict__ acc,
+    const SampleDescT& sample_desc, int y_start, int x_start) {
   int reflect_dim_idx = x_start + threadIdx.x;
   if (reflect_dim_idx < sample_desc.shape.wc) {
 #pragma unroll
@@ -254,8 +278,8 @@ DALI_DEVICE DALI_FORCEINLINE void store_acc_in_global_output(
   }
 }
 
-template <typename SampleDescT, typename ConvF>
-DALI_DEVICE DALI_FORCEINLINE void stride_grid(ConvF&& convf, const SampleDescT& sample_desc) {
+template <typename SampleDescT, typename Conv>
+DALI_DEVICE DALI_FORCEINLINE void stride_grid(const SampleDescT& sample_desc, const Conv& conv) {
   constexpr int lanes = SampleDescT::lanes;
   const auto* in = sample_desc.in;
   auto* out = sample_desc.out;
@@ -266,8 +290,8 @@ DALI_DEVICE DALI_FORCEINLINE void stride_grid(ConvF&& convf, const SampleDescT& 
       for (int x_start = blockDim.x * blockIdx.x; x_start < sample_desc.shape.wc;
            x_start += gridDim.x * blockDim.x) {
         typename SampleDescT::Acc acc[lanes] = {};
-        convf(sample_desc, in, acc, y_start, x_start);
-        store_acc_in_global_output(sample_desc, out, acc, y_start, x_start);
+        conv.compute(acc, in, y_start, x_start);
+        store_acc_in_global_output(out, acc, sample_desc, y_start, x_start);
       }
     }
   }
@@ -279,23 +303,15 @@ DALI_DEVICE DALI_FORCEINLINE void conv2d(const SampleDescT& sample_desc, const I
   using In = typename SampleDescT::In;
   using W = typename SampleDescT::W;
   using Acc = typename SampleDescT::Acc;
-  if (sample_desc.shape.in_workspace_size) {
+  if (sample_desc.shape.in_workspace_size > 0) {
     In* in_workspace = reinterpret_cast<In*>(shm);
-    stride_grid(
-        [&in_loader, &filter_loader, &in_workspace](const SampleDescT& sample_desc, const In* in,
-                                                    Acc* acc, int y_start, int x_start) {
-          shm_input_filter_product(sample_desc, in_loader, filter_loader, in, in_workspace, acc,
-                                   y_start, x_start);
-        },
-        sample_desc);
+    ShmInputConv<SampleDescT, InLoader, FilterLoader> conv{sample_desc, in_loader, filter_loader,
+                                                           in_workspace};
+    stride_grid(sample_desc, conv);
   } else {
-    stride_grid(
-        [&in_loader, &filter_loader](const SampleDescT& sample_desc, const In* in, Acc* acc,
-                                     int y_start, int x_start) {
-          global_input_filter_product(sample_desc, in_loader, filter_loader, in, acc, y_start,
-                                      x_start);
-        },
-        sample_desc);
+    DirectInputConv<SampleDescT, InLoader, FilterLoader> conv{sample_desc, in_loader,
+                                                              filter_loader};
+    stride_grid(sample_desc, conv);
   }
 }
 
@@ -304,12 +320,10 @@ __global__ void conv2d(const SampleDescT* __restrict__ descs, const InLoader in_
   extern __shared__ char shm[];
   auto sample_desc = descs[blockIdx.z];
   if (sample_desc.shape.filter_workspace_size > 0) {
-    ShmFilterLoader<SampleDescT> filter_loader;
-    filter_loader.setup(sample_desc, shm);
+    ShmFilterLoader<SampleDescT> filter_loader{sample_desc, shm};
     conv2d(sample_desc, in_loader, filter_loader, shm);
   } else {
-    DirectFilterLoader<SampleDescT> filter_loader;
-    filter_loader.setup(sample_desc);
+    DirectFilterLoader<SampleDescT> filter_loader{sample_desc};
     conv2d(sample_desc, in_loader, filter_loader, shm);
   }
 }
