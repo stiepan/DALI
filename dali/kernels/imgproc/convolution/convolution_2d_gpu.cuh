@@ -44,7 +44,7 @@ struct ShapeDesc {
   int wc, f, h, w, c;
   int filter_vol, r, s;
   int filter_top_anchor, filter_left_anchor;
-  int in_workspace_width, in_workspace_size, filter_workspace_size;
+  int in_workspace_width;
 };
 
 template <typename Out_, typename In_, typename W_, typename Acc_, int lanes_>
@@ -129,64 +129,25 @@ struct InLoaderPad {
   In pad_;
 };
 
-template <typename SampleDescT>
-struct ShmFilterLoader {
-  using W = typename SampleDescT::W;
-
-  DALI_DEVICE DALI_FORCEINLINE ShmFilterLoader(const SampleDescT& sample_desc, char* shm) {
-    filter_ = reinterpret_cast<W*>(shm + sample_desc.shape.in_workspace_size);
-    auto* global_filter = sample_desc.filter;
-    for (int i = threadIdx.x; i < sample_desc.shape.filter_vol; i += blockDim.x) {
-      filter_[i] = global_filter[i];
-    }
-    __syncthreads();
-  }
-
-  DALI_DEVICE DALI_FORCEINLINE typename SampleDescT::W load(int idx) const {
-    return filter_[idx];
-  }
-
-  W* filter_;
-};
-
-template <typename SampleDescT>
-
-struct DirectFilterLoader {
-  using W = typename SampleDescT::W;
-
-  DALI_DEVICE DALI_FORCEINLINE DirectFilterLoader(const SampleDescT& sample_desc) {
-    filter_ = sample_desc.filter;
-  }
-
-  DALI_DEVICE DALI_FORCEINLINE typename SampleDescT::W load(int idx) const {
-    return __ldg(filter_ + idx);
-  }
-
-  const W* filter_;
-};
-
-template <typename SampleDescT, typename Inloader, typename FilterLoader>
+template <typename SampleDescT, typename Inloader>
 struct ShmInputConv {
   using In = typename SampleDescT::In;
   using Acc = typename SampleDescT::Acc;
 
   DALI_DEVICE DALI_FORCEINLINE ShmInputConv(const SampleDescT& sample_desc,
-                                            const Inloader& in_loader,
-                                            const FilterLoader& filter_loader, In* in_workspace)
-      : sample_desc{sample_desc},
-        in_loader{in_loader},
-        filter_loader{filter_loader},
-        in_workspace{in_workspace} {}
+                                            const Inloader& in_loader, In* in_workspace)
+      : sample_desc{sample_desc}, in_loader{in_loader}, in_workspace{in_workspace} {}
 
   DALI_DEVICE DALI_FORCEINLINE void compute(Acc* __restrict__ acc, const In* __restrict__ in,
                                             int y_start, int x_start) const {
     __syncthreads();
     load_input_to_shm(in, y_start, x_start);
     __syncthreads();
+    const auto* filter = sample_desc.filter;
     for (int s = 0; s < sample_desc.shape.s; s++) {
       int inp_wc = threadIdx.x + s * sample_desc.shape.c;
       for (int r = 0; r < sample_desc.shape.r; r++) {
-        auto filter_coef = filter_loader.load(r * sample_desc.shape.s + s);
+        auto filter_coef = __ldg(filter + r * sample_desc.shape.s + s);
 #pragma unroll
         for (int lane = 0; lane < SampleDescT::lanes; lane++) {
           int inp_h = lane + r;
@@ -221,28 +182,27 @@ struct ShmInputConv {
 
   const SampleDescT& sample_desc;
   const Inloader& in_loader;
-  const FilterLoader& filter_loader;
   In* in_workspace;
 };
 
-template <typename SampleDescT, typename Inloader, typename FilterLoader>
+template <typename SampleDescT, typename Inloader>
 struct DirectInputConv {
   using Acc = typename SampleDescT::Acc;
   using In = typename SampleDescT::In;
 
   DALI_DEVICE DALI_FORCEINLINE DirectInputConv(const SampleDescT& sample_desc,
-                                               const Inloader& in_loader,
-                                               const FilterLoader& filter_loader)
-      : sample_desc{sample_desc}, in_loader{in_loader}, filter_loader{filter_loader} {}
+                                               const Inloader& in_loader)
+      : sample_desc{sample_desc}, in_loader{in_loader} {}
 
   DALI_DEVICE DALI_FORCEINLINE void compute(Acc* __restrict__ acc, const In* __restrict__ in,
                                             int y_start, int x_start) const {
+    const auto* filter = sample_desc.filter;
     for (int s = 0; s < sample_desc.shape.s; s++) {
       auto global_x = in_loader.remap_width(
           x_start + threadIdx.x + (sample_desc.shape.filter_left_anchor + s) * sample_desc.shape.c,
           sample_desc.shape);
       for (int r = 0; r < sample_desc.shape.r; r++) {
-        auto filter_coef = filter_loader.load(r * sample_desc.shape.s + s);
+        auto filter_coef = __ldg(filter + r * sample_desc.shape.s + s);
         // Even without shm, using `lanes` speeds up the kernel by reducing
         // the cost of nested loops arithmetic per single output value
 #pragma unroll
@@ -258,7 +218,6 @@ struct DirectInputConv {
 
   const SampleDescT& sample_desc;
   const Inloader& in_loader;
-  const FilterLoader& filter_loader;
 };
 
 template <typename SampleDescT>
@@ -297,34 +256,18 @@ DALI_DEVICE DALI_FORCEINLINE void stride_grid(const SampleDescT& sample_desc, co
   }
 }
 
-template <typename SampleDescT, typename InLoader, typename FilterLoader>
-DALI_DEVICE DALI_FORCEINLINE void conv2d(const SampleDescT& sample_desc, const InLoader& in_loader,
-                                         const FilterLoader& filter_loader, char* shm) {
-  using In = typename SampleDescT::In;
-  using W = typename SampleDescT::W;
-  using Acc = typename SampleDescT::Acc;
-  if (sample_desc.shape.in_workspace_size > 0) {
-    In* in_workspace = reinterpret_cast<In*>(shm);
-    ShmInputConv<SampleDescT, InLoader, FilterLoader> conv{sample_desc, in_loader, filter_loader,
-                                                           in_workspace};
-    stride_grid(sample_desc, conv);
-  } else {
-    DirectInputConv<SampleDescT, InLoader, FilterLoader> conv{sample_desc, in_loader,
-                                                              filter_loader};
-    stride_grid(sample_desc, conv);
-  }
-}
-
 template <typename SampleDescT, typename InLoader>
-__global__ void conv2d(const SampleDescT* __restrict__ descs, const InLoader in_loader) {
+__global__ void conv2d(const SampleDescT* __restrict__ descs, InLoader in_loader) {
+  using In = typename SampleDescT::In;
   extern __shared__ char shm[];
   auto sample_desc = descs[blockIdx.z];
-  if (sample_desc.shape.filter_workspace_size > 0) {
-    ShmFilterLoader<SampleDescT> filter_loader{sample_desc, shm};
-    conv2d(sample_desc, in_loader, filter_loader, shm);
+  if (sample_desc.shape.in_workspace_width) {
+    In* in_workspace = reinterpret_cast<In*>(shm);
+    ShmInputConv<SampleDescT, InLoader> conv{sample_desc, in_loader, in_workspace};
+    stride_grid(sample_desc, conv);
   } else {
-    DirectFilterLoader<SampleDescT> filter_loader{sample_desc};
-    conv2d(sample_desc, in_loader, filter_loader, shm);
+    DirectInputConv<SampleDescT, InLoader> conv{sample_desc, in_loader};
+    stride_grid(sample_desc, conv);
   }
 }
 }  // namespace conv_2d
@@ -332,7 +275,7 @@ __global__ void conv2d(const SampleDescT* __restrict__ descs, const InLoader in_
 template <typename Out, typename In, typename W, bool has_channel_dim, bool has_sequence_dim>
 struct Convolution2dGpu {
   /* In fact, it computes a corellation not a convolution.
-  Flip filter in both dimensions for actual convolution. */
+  Flip filter in both dimensions for an actual convolution. */
 
   static constexpr int axes = 2;
   static constexpr int num_sequence_dim = static_cast<int>(has_sequence_dim);
@@ -425,26 +368,19 @@ struct Convolution2dGpu {
     auto c = has_channel_dim ? in_out_shape[num_sequence_dim + 2] : 1;
     auto wc = w * c;
     auto hwc = h * wc;
+    has_degenerated_extents = h == 1 || w == 1;
     ValidateSampleNumericLimits(sample_idx, r, s, filter_vol, filter_top_anchor, filter_left_anchor,
                                 f, h, wc, c);
-    auto filter_workspace_size = filter_vol * sizeof(W);
-    if (2 * filter_vol <= block_width || filter_workspace_size > shared_mem_limit) {
-      filter_workspace_size = 0;
-    }
     auto in_workspace_width = block_width + (s - 1) * c;
     auto in_workspace_num_elements = in_workspace_width * (lanes + r - 1);
     if (in_workspace_width > std::numeric_limits<int>::max() ||
         in_workspace_num_elements > std::numeric_limits<int>::max()) {
       in_workspace_width = in_workspace_num_elements = 0;
     }
-    auto in_workspace_size = align_up(in_workspace_num_elements * sizeof(In), sizeof(W));
-    auto total_workspace_size = in_workspace_size + filter_workspace_size;
-    if (c > block_width || total_workspace_size > shared_mem_limit) {
-      in_workspace_size = in_workspace_width = 0;
-      total_workspace_size = filter_workspace_size;
+    required_worskapce = in_workspace_num_elements * sizeof(In);
+    if (c > block_width || required_worskapce > shared_mem_limit) {
+      required_worskapce = in_workspace_width = 0;
     }
-    required_worskapce = total_workspace_size;
-    has_degenerated_extents = h == 1 || w == 1;
     return {hwc,
             static_cast<int>(wc),
             static_cast<int>(f),
@@ -456,9 +392,7 @@ struct Convolution2dGpu {
             static_cast<int>(s),
             static_cast<int>(filter_top_anchor),
             static_cast<int>(filter_left_anchor),
-            static_cast<int>(in_workspace_width),
-            static_cast<int>(in_workspace_size),
-            static_cast<int>(filter_workspace_size)};
+            static_cast<int>(in_workspace_width)};
   }
 
   void ValidateSampleNumericLimits(int sample_idx, int64_t r, int64_t s, int64_t filter_vol,
