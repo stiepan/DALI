@@ -145,13 +145,13 @@ struct ShmInputConv {
     __syncthreads();
     const auto* filter = sample_desc.filter;
     for (int s = 0; s < sample_desc.shape.s; s++) {
-      int inp_wc = threadIdx.x + s * sample_desc.shape.c;
+      int x = threadIdx.x + s * sample_desc.shape.c;
       for (int r = 0; r < sample_desc.shape.r; r++) {
         auto filter_coef = __ldg(filter + r * sample_desc.shape.s + s);
 #pragma unroll
         for (int lane = 0; lane < SampleDescT::lanes; lane++) {
-          int inp_h = lane + r;
-          auto in_val = in_workspace[inp_h * sample_desc.shape.in_workspace_width + inp_wc];
+          int y = lane + r;
+          auto in_val = in_workspace[y * sample_desc.shape.in_workspace_width + x];
           acc[lane] += in_val * filter_coef;
         }
       }
@@ -160,22 +160,22 @@ struct ShmInputConv {
 
   DALI_DEVICE DALI_FORCEINLINE void load_input_to_shm(const In* __restrict__ in, int y_start,
                                                       int x_start) const {
-    for (int w = threadIdx.x; w < sample_desc.shape.in_workspace_width; w += blockDim.x) {
+    for (int x = threadIdx.x; x < sample_desc.shape.in_workspace_width; x += blockDim.x) {
       auto global_x = in_loader.remap_width(
-          x_start + w + sample_desc.shape.filter_left_anchor * sample_desc.shape.c,
+          x_start + x + sample_desc.shape.filter_left_anchor * sample_desc.shape.c,
           sample_desc.shape);
-      auto load_row = [&](int h) {
-        int global_y = in_loader.remap_height(y_start + h + sample_desc.shape.filter_top_anchor,
+      auto load_row = [&](int y) {
+        int global_y = in_loader.remap_height(y_start + y + sample_desc.shape.filter_top_anchor,
                                               sample_desc.shape);
-        in_workspace[h * sample_desc.shape.in_workspace_width + w] =
+        in_workspace[y * sample_desc.shape.in_workspace_width + x] =
             in_loader.load(in, global_y, global_x, sample_desc.shape);
       };
 #pragma unroll
-      for (int h = 0; h < SampleDescT::lanes; h++) {
-        load_row(h);
+      for (int y = 0; y < SampleDescT::lanes; y++) {
+        load_row(y);
       }
-      for (int h = SampleDescT::lanes; h < SampleDescT::lanes + sample_desc.shape.r - 1; h++) {
-        load_row(h);
+      for (int y = SampleDescT::lanes; y < SampleDescT::lanes + sample_desc.shape.r - 1; y++) {
+        load_row(y);
       }
     }
   }
@@ -224,13 +224,13 @@ template <typename SampleDescT>
 DALI_DEVICE DALI_FORCEINLINE void store_acc_in_global_output(
     typename SampleDescT::Out* __restrict__ out, const typename SampleDescT::Acc* __restrict__ acc,
     const SampleDescT& sample_desc, int y_start, int x_start) {
-  int reflect_dim_idx = x_start + threadIdx.x;
-  if (reflect_dim_idx < sample_desc.shape.wc) {
+  int x = x_start + threadIdx.x;
+  if (x < sample_desc.shape.wc) {
 #pragma unroll
     for (int lane = 0; lane < SampleDescT::lanes; lane++) {
-      int in_h = y_start + lane;
-      if (in_h < sample_desc.shape.h) {
-        out[in_h * sample_desc.shape.wc + reflect_dim_idx] =
+      int y = y_start + lane;
+      if (y < sample_desc.shape.h) {
+        out[y * static_cast<int64_t>(sample_desc.shape.wc) + x] =
             ConvertSat<typename SampleDescT::Out>(acc[lane]);
       }
     }
