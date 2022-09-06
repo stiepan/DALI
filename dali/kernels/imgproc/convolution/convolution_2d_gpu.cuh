@@ -16,6 +16,7 @@
 #define DALI_KERNELS_IMGPROC_CONVOLUTION_CONVOLUTION_2D_GPU_H_
 
 #include <limits>
+#include <utility>
 #include <vector>
 #include "dali/core/convert.h"
 #include "dali/core/cuda_utils.h"
