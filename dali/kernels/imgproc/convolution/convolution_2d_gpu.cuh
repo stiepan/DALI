@@ -22,23 +22,13 @@
 #include "dali/core/cuda_utils.h"
 #include "dali/core/tensor_view.h"
 #include "dali/kernels/common/utils.h"
+#include "dali/kernels/imgproc/convolution/convolution_2d.h"
 #include "dali/kernels/kernel.h"
 
 namespace dali {
 namespace kernels {
 
-namespace conv_2d {
-
-enum class BorderMode {
-  Pad,
-  Reflect101
-};
-
-template <typename In>
-struct BorderSetup {
-  BorderMode border_mode = BorderMode::Reflect101;
-  In pad = 0;
-};
+namespace conv {
 
 struct ShapeDesc {
   int64_t hwc;
@@ -271,7 +261,7 @@ __global__ void conv2d(const SampleDescT* __restrict__ descs, InLoader in_loader
     stride_grid(sample_desc, conv);
   }
 }
-}  // namespace conv_2d
+}  // namespace conv
 
 template <typename Out, typename In, typename W, bool has_channel_dim, bool has_sequence_dim>
 struct Convolution2dGpu {
@@ -295,12 +285,12 @@ struct Convolution2dGpu {
   static constexpr int max_sample_width =
       std::numeric_limits<int>::max() / max_grid_cols * max_grid_cols;
 
-  using SampleDescT = conv_2d::SampleDesc<Out, In, W, Intermediate, lanes>;
+  using SampleDescT = conv::SampleDesc<Out, In, W, Intermediate, lanes>;
 
   void Run(KernelContext& ctx, const TensorListView<StorageGPU, Out, ndim>& out,
            const TensorListView<StorageGPU, const In, ndim>& in,
            const TensorListView<StorageGPU, const W, axes>& filters,
-           const conv_2d::BorderSetup<In>& border_setup = {}) {
+           const conv::BorderSetup<In>& border_setup = {}) {
     auto num_samples = in.shape.num_samples();
 
     samples_desc_.clear();
@@ -334,30 +324,30 @@ struct Convolution2dGpu {
     dim3 grid(num_blocks_w, num_blocks_h, num_samples);
     dim3 block(block_width, 1, 1);
     RunKernel(border_setup, any_has_degenerated_extents, [&](auto&& loader) {
-      conv_2d::conv2d<<<grid, block, max_total_workspace, ctx.gpu.stream>>>(descs_dev, loader);
+      conv::conv2d<<<grid, block, max_total_workspace, ctx.gpu.stream>>>(descs_dev, loader);
       CUDA_CALL(cudaGetLastError());
     });
   }
 
  protected:
   template <typename KernelLauncher>
-  void RunKernel(const conv_2d::BorderSetup<In>& border_setup, bool has_degenerated_extents,
+  void RunKernel(const conv::BorderSetup<In>& border_setup, bool has_degenerated_extents,
                  KernelLauncher&& launch_kernel) {
-    if (border_setup.border_mode == conv_2d::BorderMode::Reflect101) {
+    if (border_setup.border_mode == conv::BorderMode::Reflect101) {
       BOOL_SWITCH(has_degenerated_extents, HasDegeneratedExtents,
-                  (conv_2d::InLoaderBorderReflect101<In, HasDegeneratedExtents> loader{};
+                  (conv::InLoaderBorderReflect101<In, HasDegeneratedExtents> loader{};
                    launch_kernel(std::move(loader));));  // NOLINT
     } else {
-      assert(border_setup.border_mode == conv_2d::BorderMode::Pad);
-      conv_2d::InLoaderPad<In> loader{border_setup.pad};
+      assert(border_setup.border_mode == conv::BorderMode::Pad);
+      conv::InLoaderPad<In> loader{border_setup.pad};
       launch_kernel(std::move(loader));
     }
   }
 
   template <typename InShape, typename FilterShape>
-  conv_2d::ShapeDesc SetupSampleDesc(int& required_worskapce, bool& has_degenerated_extents,
-                                     int sample_idx, const InShape& in_out_shape,
-                                     const FilterShape& filter_shape, int shared_mem_limit) {
+  conv::ShapeDesc SetupSampleDesc(int& required_worskapce, bool& has_degenerated_extents,
+                                  int sample_idx, const InShape& in_out_shape,
+                                  const FilterShape& filter_shape, int shared_mem_limit) {
     auto filter_vol = volume(filter_shape);
     auto r = filter_shape[0];
     auto s = filter_shape[1];
