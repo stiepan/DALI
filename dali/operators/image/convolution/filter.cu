@@ -12,95 +12,50 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <memory>
-#include <vector>
-
-#include "dali/core/static_switch.h"
-#include "dali/kernels/imgproc/convolution/convolution_2d_gpu.cuh"
-#include "dali/kernels/kernel_manager.h"
 #include "dali/operators/image/convolution/filter.h"
-#include "dali/pipeline/operator/common.h"
+#include "dali/operators/image/convolution/filter_gpu.h"
 
 namespace dali {
 
 namespace filter {
 
-template <typename Out, typename In, typename W, int num_seq_dims, bool has_channels_last>
-class FilterOpGpu : public OpImplBase<GPUBackend> {
- public:
-  static constexpr bool is_sequence = num_seq_dims > 0;
-  using Kernel = kernels::Convolution2dGpu<Out, In, W, has_channels_last, is_sequence>;
-  static constexpr int ndim = Kernel::ndim;
+extern template std::unique_ptr<OpImplBase<GPUBackend>>
+get_filter_gpu_op_impl<uint8_t, uint8_t, float>(const OpSpec&, const InputLayoutDesc&);
+extern template std::unique_ptr<OpImplBase<GPUBackend>>
+get_filter_gpu_op_impl<float, uint8_t, float>(const OpSpec&, const InputLayoutDesc&);
 
-  /**
-   * @param spec  Pointer to a persistent OpSpec object,
-   *              which is guaranteed to be alive for the entire lifetime of this object
-   */
-  explicit FilterOpGpu(const OpSpec* spec) : spec_{*spec} {
-    kmgr_.Resize<Kernel>(1);
-    filter_dev_.set_type(type2id<W>::value);
-  }
+extern template std::unique_ptr<OpImplBase<GPUBackend>>
+get_filter_gpu_op_impl<int8_t, int8_t, float>(const OpSpec&, const InputLayoutDesc&);
+extern template std::unique_ptr<OpImplBase<GPUBackend>>
+get_filter_gpu_op_impl<float, int8_t, float>(const OpSpec&, const InputLayoutDesc&);
 
-  bool SetupImpl(std::vector<OutputDesc>& output_desc, const workspace_t<GPUBackend>& ws) override {
-    ctx_.gpu.stream = ws.stream();
-    const auto& input = ws.template Input<GPUBackend>(0);
-    output_desc.resize(1);
-    output_desc[0].type = type2id<Out>::value;
-    output_desc[0].shape = input.shape();
-    return true;
-  }
+extern template std::unique_ptr<OpImplBase<GPUBackend>>
+get_filter_gpu_op_impl<uint16_t, uint16_t, float>(const OpSpec&, const InputLayoutDesc&);
+extern template std::unique_ptr<OpImplBase<GPUBackend>>
+get_filter_gpu_op_impl<float, uint16_t, float>(const OpSpec&, const InputLayoutDesc&);
 
-  void RunImpl(workspace_t<GPUBackend>& ws) override {
-    const auto& input = ws.template Input<GPUBackend>(0);
-    auto& output = ws.template Output<GPUBackend>(0);
-    output.SetLayout(input.GetLayout());
-    const auto& filters = ws.template Input<GPUBackend>(0);
-    // filter_dev_.set_order(ws.stream());
-    // filter_dev_.Copy(filter_, ws.stream());
-    auto processed_shape = input.shape();
-    if (is_sequence) {
-      processed_shape = collapse_dims(processed_shape, {{0, num_seq_dims}});
-    }
-    auto static_shape = processed_shape.to_static<ndim>();
-    auto in_view_dyn = view<const In>(input);
-    auto out_view_dyn = view<Out>(output);
-    auto in_view = reshape<ndim>(in_view_dyn, static_shape);
-    auto out_view = reshape<ndim>(out_view_dyn, static_shape);
+extern template std::unique_ptr<OpImplBase<GPUBackend>>
+get_filter_gpu_op_impl<int16_t, int16_t, float>(const OpSpec&, const InputLayoutDesc&);
+extern template std::unique_ptr<OpImplBase<GPUBackend>>
+get_filter_gpu_op_impl<float, int16_t, float>(const OpSpec&, const InputLayoutDesc&);
 
-    auto filter_view = view<const W, 2>(filters);
-    kmgr_.Run<Kernel>(0, ctx_, out_view, in_view, filter_view);
-  }
+extern template std::unique_ptr<OpImplBase<GPUBackend>>
+get_filter_gpu_op_impl<uint32_t, uint32_t, float>(const OpSpec&, const InputLayoutDesc&);
+extern template std::unique_ptr<OpImplBase<GPUBackend>>
+get_filter_gpu_op_impl<float, uint32_t, float>(const OpSpec&, const InputLayoutDesc&);
 
- private:
-  const OpSpec& spec_;
-  kernels::KernelManager kmgr_;
-  kernels::KernelContext ctx_;
-  TensorList<GPUBackend> filter_dev_;
-};
+extern template std::unique_ptr<OpImplBase<GPUBackend>>
+get_filter_gpu_op_impl<int32_t, int32_t, float>(const OpSpec&, const InputLayoutDesc&);
+extern template std::unique_ptr<OpImplBase<GPUBackend>>
+get_filter_gpu_op_impl<float, int32_t, float>(const OpSpec&, const InputLayoutDesc&);
 
-template <typename Out, typename In, typename W>
-typename std::enable_if<!std::is_integral<In>::value || !std::is_integral<W>::value ||
-                            std::is_unsigned<In>::value == std::is_unsigned<W>::value,
-                        std::unique_ptr<OpImplBase<GPUBackend>>>::type
-get_filter_gpu_op_impl(const OpSpec& spec_, const InputLayoutDesc& input_desc) {
-  BOOL_SWITCH(
-      input_desc.num_seq_dims > 0, IsSequence,
-      (BOOL_SWITCH(input_desc.has_channels, HasChannels,
-                   (return std::make_unique<FilterOpGpu<Out, In, W, IsSequence, HasChannels>>(
-                               &spec_);));  // NOLINT
-       ));                                  // NOLINT
-}
+extern template std::unique_ptr<OpImplBase<GPUBackend>>
+get_filter_gpu_op_impl<float16, float16, float>(const OpSpec&, const InputLayoutDesc&);
+extern template std::unique_ptr<OpImplBase<GPUBackend>>
+get_filter_gpu_op_impl<float, float16, float>(const OpSpec&, const InputLayoutDesc&);
 
-template <typename Out, typename In, typename W>
-typename std::enable_if<std::is_integral<In>::value && std::is_integral<W>::value &&
-                            std::is_unsigned<In>::value != std::is_unsigned<W>::value,
-                        std::unique_ptr<OpImplBase<GPUBackend>>>::type
-get_filter_gpu_op_impl(const OpSpec& spec_, const InputLayoutDesc& input_desc) {
-  DALI_FAIL(
-      make_string("Input and filter types must be of the same signedness. Got input of type: ",
-                  type2id<In>::value, " and filter of type: ", type2id<W>::value, "."));
-}
-
+extern template std::unique_ptr<OpImplBase<GPUBackend>>
+get_filter_gpu_op_impl<float, float, float>(const OpSpec&, const InputLayoutDesc&);
 
 }  // namespace filter
 

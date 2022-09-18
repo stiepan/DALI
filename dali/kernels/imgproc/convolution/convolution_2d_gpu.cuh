@@ -272,6 +272,7 @@ struct Convolution2dGpu {
   static constexpr int num_sequence_dim = static_cast<int>(has_sequence_dim);
   static constexpr int num_channels_dim = static_cast<int>(has_channel_dim);
   static constexpr int ndim = num_sequence_dim + axes + num_channels_dim;
+  static constexpr int filter_ndim = axes;
   using Intermediate = decltype(std::declval<W>() * std::declval<In>());
 
   static constexpr int block_width = 128;
@@ -428,6 +429,12 @@ constexpr int Convolution2dGpu<Out, In, W, has_channel_dim, has_sequence_dim>::m
 
 template <typename Out, typename In, typename W, bool has_channel_dim, bool has_sequence_dim>
 constexpr int Convolution2dGpu<Out, In, W, has_channel_dim, has_sequence_dim>::max_sample_width;
+
+template <typename Out, typename In, typename W, bool has_channel_dim, bool has_sequence_dim>
+constexpr int Convolution2dGpu<Out, In, W, has_channel_dim, has_sequence_dim>::max_grid_height;
+
+template <typename Out, typename In, typename W, bool has_channel_dim, bool has_sequence_dim>
+constexpr int Convolution2dGpu<Out, In, W, has_channel_dim, has_sequence_dim>::max_grid_width;
 
 
 }  // namespace kernels

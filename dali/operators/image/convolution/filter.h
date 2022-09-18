@@ -18,8 +18,7 @@
 #include <memory>
 #include <vector>
 
-#include "dali/operators/image/convolution/convolution_utils.h"
-#include "dali/operators/image/convolution/laplacian_params.h"
+#include "dali/core/static_switch.h"
 #include "dali/pipeline/operator/common.h"
 #include "dali/pipeline/operator/operator.h"
 #include "dali/pipeline/operator/sequence_operator.h"
@@ -33,7 +32,7 @@ struct InputLayoutDesc {
   bool has_channels = false;
 };
 
-InputLayoutDesc parse_input_layout(const TensorLayout& layout) {
+inline InputLayoutDesc parse_input_layout(const TensorLayout& layout) {
   InputLayoutDesc input_desc;
   const auto is_seq_like = [](char extent) { return extent == 'C' || extent == 'F'; };
   while (input_desc.num_seq_dims < layout.size() && is_seq_like(layout[input_desc.num_seq_dims])) {
@@ -46,10 +45,9 @@ InputLayoutDesc parse_input_layout(const TensorLayout& layout) {
 }  // namespace filter
 
 #define FILTER_INPUT_SUPPORTED_TYPES \
-  (uint8_t, int8_t, uint16_t, int16_t, uint32_t, int32_t, uint64_t, int64_t, float16, float)
+  (uint8_t, int8_t, uint16_t, int16_t, uint32_t, int32_t, float16, float)
 
-#define FILTER_KERNEL_SUPPORTED_TYPES \
-  (uint32_t, int32_t, uint64_t, int64_t, float16, float)
+#define FILTER_KERNEL_SUPPORTED_TYPES (float)
 
 template <typename Backend>
 class Filter : public SequenceOperator<Backend> {
@@ -129,4 +127,4 @@ class Filter : public SequenceOperator<Backend> {
 
 }  // namespace dali
 
-#endif  // DALI_OPERATORS_IMAGE_CONVOLUTION_LAPLACIAN_H_
+#endif  // DALI_OPERATORS_IMAGE_CONVOLUTION_FILTER_H_
