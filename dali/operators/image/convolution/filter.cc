@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "dali/core/static_switch.h"
+#include "dali/operators/image/convolution/filter.h"
 #include "dali/pipeline/data/views.h"
 #include "dali/pipeline/operator/common.h"
 
@@ -44,16 +45,19 @@ frame-wise to a video input.
     .NumOutput(1)
     .AllowSequences()
     .AddOptionalArg("fill_value",
-                    R"code(If specified, input image is padded with
-    the provided value, so that the output image has the same shape as input.
-    If not specified, border mode 101 is used, i.e. image is reflected around
-    the perimeter to fill missing values.)code",
+                    R"code(Value to be used as a padding of the image if ``border_mode`` is set to
+``BORDER_FILL``. Otherwise, the parameter is ignored.)code",
                     std::vector<float>{0}, true, true)
     .AddOptionalArg("anchor",
                     R"code(2D point lying within the filter specifying the placement of the
-    filter over an image. The ordering of extents corresponds to the ordering of filter's extents.
-    If -1 (the default) is specified for the extent, the middle of that extent is used.)code",
+filter over an image. The ordering of extents corresponds to the ordering of filter's extents.
+If -1 (the default) is specified for an extent, the middle of the extent is used.)code",
                     std::vector<int>{-1}, true, true)
+    .AddOptionalArg<DALIBorderMode>(
+        "border_mode",
+        R"code(Controls how to compute convolution around the edges of the image, i.e.
+when part of the filter lies outside of the image.)code",
+        DALI_BORDER_REFLECT_101)
     .AddOptionalTypeArg("dtype", R"code(Output data type.
 Supported type: `FLOAT`. If not set, the input type is used.)code")
     .InputLayout(0, {"FHWC", "FCHW", "HWC", "CHW", "HW"});

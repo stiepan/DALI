@@ -16,7 +16,7 @@
 from enum import Enum, unique
 import re
 
-from nvidia.dali.backend_impl.types import DALIDataType, DALIImageType, DALIInterpType
+from nvidia.dali.backend_impl.types import DALIDataType, DALIImageType, DALIInterpType, DALIBorderMode
 
 # TODO: Handle forwarding imports from backend_impl
 from nvidia.dali.backend_impl.types import *        # noqa: F401, F403
@@ -63,6 +63,8 @@ _known_types = {
     DALIDataType.DATA_TYPE: ("nvidia.dali.types.DALIDataType", lambda x: DALIDataType(int(x))),
     DALIDataType.INTERP_TYPE:
     ("nvidia.dali.types.DALIInterpType", lambda x: DALIInterpType(int(x))),
+    DALIDataType.BORDER_MODE:
+    ("nvidia.dali.types.DALIBorderMode", lambda x: DALIBorderMode(int(x))),
     DALIDataType.TENSOR_LAYOUT: (":ref:`layout str<layout_str_doc>`", lambda x: str(x)),
     DALIDataType.PYTHON_OBJECT: ("object", lambda x: x),
     DALIDataType._TENSOR_LAYOUT_VEC:
@@ -92,6 +94,8 @@ if _tfrecord_support:
 def _type_name_convert_to_string(dtype, allow_tensors):
     if dtype in _known_types:
         type_name = _known_types[dtype][0]
+        if dtype in _enum_types:
+            type_name = f":class:`{type_name}`"
         ret = type_name
         if dtype in _vector_types:
             ret += " or list of " + type_name
@@ -186,7 +190,10 @@ _float_types = [DALIDataType.FLOAT16, DALIDataType.FLOAT, DALIDataType.FLOAT64]
 _int_like_types = _bool_types + _int_types
 _all_types = _bool_types + _int_types + _float_types
 
-_enum_types = [DALIDataType.IMAGE_TYPE, DALIDataType.DATA_TYPE, DALIDataType.INTERP_TYPE]
+_enum_types = [
+    DALIDataType.IMAGE_TYPE, DALIDataType.DATA_TYPE, DALIDataType.INTERP_TYPE,
+    DALIDataType.BORDER_MODE
+]
 
 
 class ScalarConstant(object):

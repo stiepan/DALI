@@ -18,6 +18,7 @@
 #include <memory>
 #include <vector>
 
+#include "dali/core/common.h"
 #include "dali/core/static_switch.h"
 #include "dali/pipeline/operator/common.h"
 #include "dali/pipeline/operator/operator.h"
