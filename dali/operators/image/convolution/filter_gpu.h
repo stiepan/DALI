@@ -22,6 +22,7 @@
 #include "dali/kernels/imgproc/convolution/convolution_2d_gpu.cuh"
 #include "dali/kernels/kernel_manager.h"
 #include "dali/operators/image/convolution/filter.h"
+#include "dali/pipeline/operator/arg_helper.h"
 #include "dali/pipeline/operator/common.h"
 
 namespace dali {
@@ -40,7 +41,8 @@ class FilterOpGpu : public OpImplBase<GPUBackend> {
    * @param spec  Pointer to a persistent OpSpec object,
    *              which is guaranteed to be alive for the entire lifetime of this object
    */
-  explicit FilterOpGpu(const OpSpec* spec) : spec_{*spec} {
+  explicit FilterOpGpu(const OpSpec* spec)
+      : spec_{*spec}, fill_value_arg_("fill_value", spec_), anchor_arg_("anchor", spec_) {
     kmgr_.Resize<Kernel>(1);
     filter_dev_.set_type(type2id<W>::value);
   }
@@ -51,6 +53,7 @@ class FilterOpGpu : public OpImplBase<GPUBackend> {
     output_desc.resize(1);
     output_desc[0].type = type2id<Out>::value;
     output_desc[0].shape = input.shape();
+    ProcessArgs(ws, input.num_samples());
     return true;
   }
 
@@ -68,12 +71,18 @@ class FilterOpGpu : public OpImplBase<GPUBackend> {
     auto out_views_dyn = view<Out>(output);
     auto in_views = reshape<ndim>(in_views_dyn, static_shape);
     auto out_views = reshape<ndim>(out_views_dyn, static_shape);
+    auto anchor_views = anchor_arg_.get();
 
     auto filter_views = GetFilterViews(ws);
-    kmgr_.Run<Kernel>(0, ctx_, out_views, in_views, filter_views);
+    kmgr_.Run<Kernel>(0, ctx_, out_views, in_views, filter_views, anchor_views);
   }
 
  private:
+  void ProcessArgs(const workspace_t<GPUBackend>& ws, int num_samples) {
+    fill_value_arg_.Acquire(spec_, ws, num_samples);
+    anchor_arg_.Acquire(spec_, ws, num_samples, TensorShape<1>{filter_ndim});
+  }
+
   TensorListView<StorageGPU, const W, filter_ndim> GetFilterViews(
       const workspace_t<GPUBackend>& ws) {
     if (ws.template InputIsType<GPUBackend>(1)) {
@@ -87,10 +96,16 @@ class FilterOpGpu : public OpImplBase<GPUBackend> {
   }
 
   const OpSpec& spec_;
+  ArgValue<float, 1> fill_value_arg_;
+  ArgValue<int, 1> anchor_arg_;
+
   kernels::KernelManager kmgr_;
   kernels::KernelContext ctx_;
   TensorList<GPUBackend> filter_dev_;
 };
+
+template <typename Out, typename In, typename W, int num_seq_dims, bool has_channels_last>
+constexpr int FilterOpGpu<Out, In, W, num_seq_dims, has_channels_last>::filter_ndim;
 
 template <typename Out, typename In, typename W>
 typename std::enable_if<!std::is_integral<In>::value || !std::is_integral<W>::value ||

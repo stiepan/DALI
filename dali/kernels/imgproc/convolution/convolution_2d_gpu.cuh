@@ -291,6 +291,7 @@ struct Convolution2dGpu {
   void Run(KernelContext& ctx, const TensorListView<StorageGPU, Out, ndim>& out,
            const TensorListView<StorageGPU, const In, ndim>& in,
            const TensorListView<StorageGPU, const W, axes>& filters,
+           const TensorListView<StorageCPU, const int, 1>& anchors,
            const conv::BorderSetup<In>& border_setup = {}) {
     auto num_samples = in.shape.num_samples();
 
@@ -305,10 +306,11 @@ struct Convolution2dGpu {
     for (int sample_idx = 0; sample_idx < num_samples; sample_idx++) {
       const auto& in_out_shape = in_shapes[sample_idx];
       const auto& filter_shape = filter_shapes[sample_idx];
+      const auto& anchor_view = anchors[sample_idx];
       int required_workspace;
       bool has_degenerated_extents;
       auto shape_desc = SetupSampleDesc(required_workspace, has_degenerated_extents, sample_idx,
-                                        in_out_shape, filter_shape, shared_mem_limit);
+                                        in_out_shape, filter_shape, anchor_view, shared_mem_limit);
       max_height = std::max(max_height, shape_desc.h);
       max_width = std::max(max_width, shape_desc.wc);
       any_has_degenerated_extents |= has_degenerated_extents;
@@ -345,15 +347,24 @@ struct Convolution2dGpu {
     }
   }
 
-  template <typename InShape, typename FilterShape>
+  template <typename InShape, typename FilterShape, typename AnchorView>
   conv::ShapeDesc SetupSampleDesc(int& required_worskapce, bool& has_degenerated_extents,
                                   int sample_idx, const InShape& in_out_shape,
-                                  const FilterShape& filter_shape, int shared_mem_limit) {
+                                  const FilterShape& filter_shape, const AnchorView& anchor,
+                                  int shared_mem_limit) {
     auto filter_vol = volume(filter_shape);
     auto r = filter_shape[0];
     auto s = filter_shape[1];
-    auto filter_top_anchor = -r / 2;
-    auto filter_left_anchor = -s / 2;
+    auto filter_top_anchor = anchor.data[0] == -1 ? r / 2 : anchor.data[0];
+    auto filter_left_anchor = anchor.data[1] == -1 ? s / 2 : anchor.data[1];
+    DALI_ENFORCE(
+        0 <= filter_top_anchor && filter_top_anchor < r && 0 <= filter_left_anchor &&
+            filter_left_anchor < s,
+        make_string("Anchor must lie within the filter. Got anchor ",
+                    TensorShape<2>{filter_top_anchor, filter_left_anchor}, " with filter of shape ",
+                    filter_shape, "for sample of idx ", sample_idx, "."));
+    filter_top_anchor = -filter_top_anchor;
+    filter_left_anchor = -filter_left_anchor;
     auto f = has_sequence_dim ? in_out_shape[0] : 1;
     auto h = in_out_shape[num_sequence_dim];
     auto w = in_out_shape[num_sequence_dim + 1];
@@ -435,7 +446,6 @@ constexpr int Convolution2dGpu<Out, In, W, has_channel_dim, has_sequence_dim>::m
 
 template <typename Out, typename In, typename W, bool has_channel_dim, bool has_sequence_dim>
 constexpr int Convolution2dGpu<Out, In, W, has_channel_dim, has_sequence_dim>::max_grid_width;
-
 
 }  // namespace kernels
 }  // namespace dali

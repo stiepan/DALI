@@ -199,6 +199,12 @@ class FusedLaplacianOpGpu : public OpImplBase<GPUBackend> {
 
     filter_dev_.set_order(ws.stream());
     filter_dev_.Copy(filter_, ws.stream());
+    anchor_.Resize(uniform_list_shape(nsamples, TensorShape<1>{2}), DALIDataType::DALI_INT32);
+    auto anchor_view = view<int, 1>(anchor_);
+    for(int sample_idx = 0; sample_idx < nsamples; sample_idx++) {
+      anchor_view[sample_idx].data[0] = -1;
+      anchor_view[sample_idx].data[1] = -1;
+    }
 
     // auto& req = kmgr_.Setup<Kernel>(0, ctx_, processed_shape.to_static<ndim>());
     return true;
@@ -222,7 +228,7 @@ class FusedLaplacianOpGpu : public OpImplBase<GPUBackend> {
     auto out_view = reshape<ndim>(out_view_dyn, static_shape);
 
     auto filter_view = view<float, 2>(filter_dev_);
-    kmgr_.Run<Kernel>(0, ctx_, out_view, in_view, filter_view);
+    kmgr_.Run<Kernel>(0, ctx_, out_view, in_view, filter_view, view<int, 1>(anchor_));
   }
 
  private:
@@ -236,6 +242,8 @@ class FusedLaplacianOpGpu : public OpImplBase<GPUBackend> {
 
   TensorList<CPUBackend> filter_;
   TensorList<GPUBackend> filter_dev_;
+
+  TensorList<CPUBackend> anchor_;
 };
 
 

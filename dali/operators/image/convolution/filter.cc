@@ -43,13 +43,17 @@ frame-wise to a video input.
     .NumInput(2)
     .NumOutput(1)
     .AllowSequences()
-    .AddOptionalArg<std::vector<float>>("fill_value",
-                                        R"code(If specified, input image is padded with
+    .AddOptionalArg("fill_value",
+                    R"code(If specified, input image is padded with
     the provided value, so that the output image has the same shape as input.
     If not specified, border mode 101 is used, i.e. image is reflected around
     the perimeter to fill missing values.)code",
-                                        nullptr, true, true)
-    .AddOptionalArg("anchor", "2d filter anchor", std::vector<int>{0}, true, true)
+                    std::vector<float>{0}, true, true)
+    .AddOptionalArg("anchor",
+                    R"code(2D point lying within the filter specifying the placement of the
+    filter over an image. The ordering of extents corresponds to the ordering of filter's extents.
+    If -1 (the default) is specified for the extent, the middle of that extent is used.)code",
+                    std::vector<int>{-1}, true, true)
     .AddOptionalTypeArg("dtype", R"code(Output data type.
 Supported type: `FLOAT`. If not set, the input type is used.)code")
     .InputLayout(0, {"FHWC", "FCHW", "HWC", "CHW", "HW"});
