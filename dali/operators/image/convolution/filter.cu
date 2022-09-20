@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <memory>
+
 #include "dali/operators/image/convolution/filter.h"
 #include "dali/operators/image/convolution/filter_gpu.h"
 
@@ -54,8 +56,8 @@ get_filter_gpu_op_impl<float16, float16, float>(const OpSpec&, const InputLayout
 extern template std::unique_ptr<OpImplBase<GPUBackend>>
 get_filter_gpu_op_impl<float, float16, float>(const OpSpec&, const InputLayoutDesc&);
 
-extern template std::unique_ptr<OpImplBase<GPUBackend>>
-get_filter_gpu_op_impl<float, float, float>(const OpSpec&, const InputLayoutDesc&);
+extern template std::unique_ptr<OpImplBase<GPUBackend>> get_filter_gpu_op_impl<float, float, float>(
+    const OpSpec&, const InputLayoutDesc&);
 
 }  // namespace filter
 

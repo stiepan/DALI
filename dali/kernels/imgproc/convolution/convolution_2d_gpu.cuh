@@ -84,7 +84,6 @@ struct InLoaderBorderRemap : protected Remap {
   }
 };
 
-
 template <bool degenerated_extents>
 struct Reflect101 {
   DALI_HOST_DEV DALI_FORCEINLINE int border_remap(int idx, int len) const {

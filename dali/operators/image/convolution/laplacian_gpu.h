@@ -262,7 +262,8 @@ op_impl_uptr GetLaplacianGpuImpl(const OpSpec* spec, const DimDesc& dim_desc) {
   VALUE_SWITCH(dim_desc.usable_axes_count, Axes, LAPLACIAN_SUPPORTED_AXES, (
     BOOL_SWITCH(dim_desc.is_channel_last(), HasChannels, (
       BOOL_SWITCH(dim_desc.is_sequence(), IsSeq, (
-        bool use_fused = !spec->HasTensorArgument(windowSizeArgName) && !spec->HasTensorArgument(smoothingSizeArgName);
+        bool use_fused = !spec->HasTensorArgument(windowSizeArgName) && \
+          !spec->HasTensorArgument(smoothingSizeArgName);
         if (use_fused) {
           using FusedLaplacianImpl = FusedLaplacianOpGpu<Out, In, Axes, HasChannels, IsSeq>;
           result.reset(new FusedLaplacianImpl(spec, dim_desc));
