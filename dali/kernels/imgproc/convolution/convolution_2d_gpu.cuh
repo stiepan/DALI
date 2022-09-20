@@ -52,14 +52,14 @@ struct SampleDesc {
   ShapeDesc shape;
 };
 
-template <typename In, bool degenerated_extents>
-struct InLoaderBorderReflect101 {
+template <typename Remap, typename In>
+struct InLoaderBorderRemap : protected Remap {
   DALI_HOST_DEV DALI_FORCEINLINE int remap_height(int idx, const ShapeDesc& sample_shape) const {
-    return border_relefect_101(idx, sample_shape.h);
+    return this->border_remap(idx, sample_shape.h);
   }
 
   DALI_HOST_DEV DALI_FORCEINLINE int remap_width(int idx, const ShapeDesc& sample_shape) const {
-    return border_relefect_101_strided(idx, sample_shape.w, sample_shape.c, sample_shape.wc);
+    return border_remap_strided(idx, sample_shape.w, sample_shape.c, sample_shape.wc);
   }
 
   DALI_HOST_DEV DALI_FORCEINLINE In load(const In __restrict__* in, int y, int x,
@@ -68,7 +68,27 @@ struct InLoaderBorderReflect101 {
   }
 
  protected:
-  DALI_HOST_DEV DALI_FORCEINLINE int border_relefect_101(int idx, int len) const {
+  DALI_HOST_DEV DALI_FORCEINLINE int border_remap_strided(int idx, int reflect_dim_size,
+                                                          int inner_stride,
+                                                          int total_stride) const {
+    if (idx < 0) {
+      int reflect_dim_idx = (idx + 1) / inner_stride - 1;
+      int inner_dim_idx = (idx + 1) % inner_stride + inner_stride - 1;
+      return this->border_remap(reflect_dim_idx, reflect_dim_size) * inner_stride + inner_dim_idx;
+    }
+    if (idx >= total_stride) {
+      return this->border_remap(idx / inner_stride, reflect_dim_size) * inner_stride +
+             idx % inner_stride;
+    }
+    return idx;
+  }
+};
+
+
+template <bool degenerated_extents>
+struct Reflect101 {
+  DALI_HOST_DEV DALI_FORCEINLINE int border_remap(int idx, int len) const {
+    assert(len > 0);
     if (degenerated_extents && len == 1) {
       return 0;
     }
@@ -82,18 +102,44 @@ struct InLoaderBorderReflect101 {
       }
     }
   }
+};
 
-  DALI_HOST_DEV DALI_FORCEINLINE int border_relefect_101_strided(int idx, int reflect_dim_size,
-                                                                 int inner_stride,
-                                                                 int total_stride) const {
-    if (idx < 0) {
-      int reflect_dim_idx = (idx + 1) / inner_stride - 1;
-      int inner_dim_idx = (idx + 1) % inner_stride + inner_stride - 1;
-      return border_relefect_101(reflect_dim_idx, reflect_dim_size) * inner_stride + inner_dim_idx;
+struct Reflect1001 {
+  DALI_HOST_DEV DALI_FORCEINLINE int border_remap(int idx, int len) const {
+    assert(len > 0);
+    while (true) {
+      if (idx < 0) {
+        idx = -idx - 1;
+      } else if (idx >= len) {
+        idx = 2 * len - 1 - idx;
+      } else {
+        return idx;
+      }
     }
-    if (idx >= total_stride) {
-      return border_relefect_101(idx / inner_stride, reflect_dim_size) * inner_stride +
-             idx % inner_stride;
+  }
+};
+
+struct Replicate {
+  DALI_HOST_DEV DALI_FORCEINLINE int border_remap(int idx, int len) const {
+    assert(len > 0);
+    if (idx < 0) {
+      return 0;
+    }
+    if (idx >= len) {
+      return len - 1;
+    }
+    return idx;
+  }
+};
+
+struct Wrap {
+  DALI_HOST_DEV DALI_FORCEINLINE int border_remap(int idx, int len) const {
+    assert(len > 0);
+    if (idx < 0) {
+      return len + idx % len;
+    }
+    if (idx >= len) {
+      return idx % len;
     }
     return idx;
   }
@@ -367,12 +413,24 @@ struct Convolution2dGpu {
       // If any of the samples has some extent equal to 1, border handler needs extra
       // check to prevent infinite loop. Extra check for every single position of the filter
       // over an image is costly, so try to avoid it.
-      BOOL_SWITCH(has_degenerated_extents, HasDegeneratedExtents,
-                  (using Loader = conv::InLoaderBorderReflect101<In, HasDegeneratedExtents>;
-                   conv::InLoaderFactory<Loader> loader_factory{Loader{}};
-                   launch_kernel(std::move(loader_factory));));  // NOLINT
-    } else {
-      DALI_ENFORCE(border_mode == DALI_BORDER_FILL);
+      BOOL_SWITCH(
+          has_degenerated_extents, HasDegeneratedExtents,
+          (using Loader = conv::InLoaderBorderRemap<conv::Reflect101<HasDegeneratedExtents>, In>;
+           conv::InLoaderFactory<Loader> loader_factory{Loader{}};
+           launch_kernel(std::move(loader_factory));));  // NOLINT
+    } else if (border_mode == DALI_BORDER_REFLECT_1001) {
+      using Loader = conv::InLoaderBorderRemap<conv::Reflect1001, In>;
+      conv::InLoaderFactory<Loader> loader_factory{Loader{}};
+      launch_kernel(std::move(loader_factory));
+    } else if (border_mode == DALI_BORDER_REPLICATE) {
+      using Loader = conv::InLoaderBorderRemap<conv::Replicate, In>;
+      conv::InLoaderFactory<Loader> loader_factory{Loader{}};
+      launch_kernel(std::move(loader_factory));
+    } else if (border_mode == DALI_BORDER_WRAP) {
+      using Loader = conv::InLoaderBorderRemap<conv::Wrap, In>;
+      conv::InLoaderFactory<Loader> loader_factory{Loader{}};
+      launch_kernel(std::move(loader_factory));
+    } else if (border_mode == DALI_BORDER_FILL) {
       int num_samples = samples_desc_.size();
       assert(fill_values.num_samples() == num_samples || fill_values.num_samples() == 0);
       if (fill_values.num_samples() != num_samples) {
@@ -388,6 +446,9 @@ struct Convolution2dGpu {
         conv::InLoaderFactory<conv::InLoaderPad<In>> loader_factory{fill_values_dev};
         launch_kernel(std::move(loader_factory));
       }
+    } else {
+      DALI_FAIL(
+          make_string("Unsupported border mode was specified: ", to_string(border_mode), "."));
     }
   }
 
