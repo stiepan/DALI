@@ -42,7 +42,9 @@ class FilterOpGpu : public OpImplBase<GPUBackend> {
    *              which is guaranteed to be alive for the entire lifetime of this object
    */
   explicit FilterOpGpu(const OpSpec* spec)
-      : spec_{*spec}, fill_value_arg_("fill_value", spec_), anchor_arg_("anchor", spec_) {
+      : spec_{*spec},
+        anchor_arg_{"anchor", spec_},
+        border_mode_{spec_.GetArgument<DALIBorderMode>("border_mode")} {
     kmgr_.Resize<Kernel>(1);
     filter_dev_.set_type(type2id<W>::value);
   }
@@ -53,7 +55,7 @@ class FilterOpGpu : public OpImplBase<GPUBackend> {
     output_desc.resize(1);
     output_desc[0].type = type2id<Out>::value;
     output_desc[0].shape = input.shape();
-    ProcessArgs(ws, input.num_samples());
+    anchor_arg_.Acquire(spec_, ws, input.num_samples(), TensorShape<1>{filter_ndim});
     return true;
   }
 
@@ -72,17 +74,13 @@ class FilterOpGpu : public OpImplBase<GPUBackend> {
     auto in_views = reshape<ndim>(in_views_dyn, static_shape);
     auto out_views = reshape<ndim>(out_views_dyn, static_shape);
     auto anchor_views = anchor_arg_.get();
-
     auto filter_views = GetFilterViews(ws);
-    kmgr_.Run<Kernel>(0, ctx_, out_views, in_views, filter_views, anchor_views);
+    auto fill_value_views = GetFillValueViews(ws);
+    kmgr_.Run<Kernel>(0, ctx_, out_views, in_views, filter_views, anchor_views, border_mode_,
+                      fill_value_views);
   }
 
  private:
-  void ProcessArgs(const workspace_t<GPUBackend>& ws, int num_samples) {
-    fill_value_arg_.Acquire(spec_, ws, num_samples);
-    anchor_arg_.Acquire(spec_, ws, num_samples, TensorShape<1>{filter_ndim});
-  }
-
   TensorListView<StorageGPU, const W, filter_ndim> GetFilterViews(
       const workspace_t<GPUBackend>& ws) {
     if (ws.template InputIsType<GPUBackend>(1)) {
@@ -95,13 +93,34 @@ class FilterOpGpu : public OpImplBase<GPUBackend> {
     }
   }
 
+  TensorListView<StorageGPU, const In, 0> GetFillValueViews(const workspace_t<GPUBackend>& ws) {
+    if (ws.NumInput() < 3) {
+      return {};
+    }
+    DALI_ENFORCE(
+        ws.GetInputDataType(2) == ws.GetInputDataType(0),
+        make_string("The padding scalars (third positional argument) must be of the "
+                    "same time as the input samples. Got ",
+                    ws.GetInputDataType(2), " for pad values while the input samples are of type ",
+                    ws.GetInputDataType(0), "."));
+    if (ws.template InputIsType<GPUBackend>(2)) {
+      return view<const In, 0>(ws.template Input<GPUBackend>(2));
+    } else {
+      const auto& fill_values = ws.template Input<CPUBackend>(2);
+      fill_values_dev_.set_order(ws.stream());
+      fill_values_dev_.Copy(fill_values);
+      return view<const In, 0>(fill_values_dev_);
+    }
+  }
+
   const OpSpec& spec_;
-  ArgValue<float, 1> fill_value_arg_;
   ArgValue<int, 1> anchor_arg_;
+  DALIBorderMode border_mode_;
 
   kernels::KernelManager kmgr_;
   kernels::KernelContext ctx_;
   TensorList<GPUBackend> filter_dev_;
+  TensorList<GPUBackend> fill_values_dev_;
 };
 
 template <typename Out, typename In, typename W, int num_seq_dims, bool has_channels_last>

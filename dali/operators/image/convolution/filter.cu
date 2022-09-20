@@ -65,7 +65,7 @@ template <>
 bool Filter<GPUBackend>::ShouldExpand(const workspace_t<GPUBackend>& ws) {
   ValidateLayouts(ws);
   return SequenceOperator<GPUBackend>::ShouldExpand(ws) &&
-         (HasPerFrameFilters(ws) || HasPerFrameArgInputs(ws));
+         (HasPerFramePositionalArgs(ws) || HasPerFrameArgInputs(ws));
 }
 
 template <>

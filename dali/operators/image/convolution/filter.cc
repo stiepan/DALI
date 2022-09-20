@@ -27,13 +27,18 @@ namespace dali {
 DALI_SCHEMA(experimental__Filter)
     .DocStr(R"code(Convolves the image with a provided filter.
 
-The operator accepts exactly two positional arguments:
-the batch of images and the batch of filters.
+The operator requires two positional arguments: the batch of images and the batch of filters.
 
-Operator supports 2D images with both channels-first and channels-last layouts.
+Operator supports 2D images and video with both channels-first and channels-last layouts.
 
-Filter must be a 2D array of filter coefficients or a sequence of 2D arrays to be applied
-frame-wise to a video input.
+A filter must be a 2D array of filter coefficients or a sequence of 2D arrays to be applied
+frame-wise to a video input. The coefficients must be floats.
+
+The optional third argument should be a batch of scalars (or a sequence of scalars for
+video input). If ``border_mode`` is set to BORDER_FILL, the input samples will be padded with
+the corresponding scalars when convolved with the filter, so that the convolution preserves
+original shape of the image. Otherwise the argument is ignored.
+The scalars must be of the same type as the input samples.
 
 .. note::
   In fact, the operator computes a correlation, not a convolution,
@@ -41,13 +46,9 @@ frame-wise to a video input.
   filter and a part of an image .
 
 )code")
-    .NumInput(2)
+    .NumInput(2, 3)
     .NumOutput(1)
     .AllowSequences()
-    .AddOptionalArg("fill_value",
-                    R"code(Value to be used as a padding of the image if ``border_mode`` is set to
-``BORDER_FILL``. Otherwise, the parameter is ignored.)code",
-                    std::vector<float>{0}, true, true)
     .AddOptionalArg("anchor",
                     R"code(2D point lying within the filter specifying the placement of the
 filter over an image. The ordering of extents corresponds to the ordering of filter's extents.

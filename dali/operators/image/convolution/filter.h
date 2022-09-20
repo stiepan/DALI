@@ -120,6 +120,18 @@ class Filter : public SequenceOperator<Backend> {
     return filter_dim == 3 && filter_layout.size() == 3 && filter_layout[0] == 'F';
   }
 
+  bool HasPerFrameFillValues(const workspace_t<Backend>& ws) {
+    if (ws.NumInput() < 3) {
+      return false;
+    }
+    const auto& layout = GetInputLayout(ws, 2);
+    return layout.size() == 1 && layout[0] == 'F';
+  }
+
+  bool HasPerFramePositionalArgs(const workspace_t<Backend>& ws) {
+    return HasPerFrameFilters(ws) || HasPerFrameFillValues(ws);
+  }
+
  private:
   DALIDataType dtype_ = DALI_NO_TYPE;
   USE_OPERATOR_MEMBERS();

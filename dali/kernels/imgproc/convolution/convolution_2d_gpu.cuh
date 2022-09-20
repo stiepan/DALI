@@ -18,11 +18,11 @@
 #include <limits>
 #include <utility>
 #include <vector>
+#include "dali/core/common.h"
 #include "dali/core/convert.h"
 #include "dali/core/cuda_utils.h"
 #include "dali/core/tensor_view.h"
 #include "dali/kernels/common/utils.h"
-#include "dali/kernels/imgproc/convolution/convolution_2d.h"
 #include "dali/kernels/kernel.h"
 
 namespace dali {
@@ -112,12 +112,33 @@ struct InLoaderPad {
   DALI_HOST_DEV DALI_FORCEINLINE In load(const In __restrict__* in, int y, int x,
                                          const ShapeDesc& sample_shape) const {
     if (y < 0 || x < 0 || x >= sample_shape.wc || y >= sample_shape.h) {
-      return pad_;
+      return fill_value;
     }
     return in[y * static_cast<int64_t>(sample_shape.wc) + x];
   }
 
-  In pad_;
+  In fill_value;
+};
+
+template <typename InLoader>
+struct InLoaderFactory {
+  using T = InLoader;
+  DALI_DEVICE DALI_FORCEINLINE T& operator()(int sample_idx) {
+    return in_loader;
+  }
+  T in_loader;
+};
+
+template <typename In>
+struct InLoaderFactory<InLoaderPad<In>> {
+  using T = InLoaderPad<In>;
+  DALI_DEVICE DALI_FORCEINLINE T operator()(int sample_idx) {
+    if (fill_values == nullptr) {
+      return {0};
+    }
+    return {fill_values[sample_idx][0]};
+  }
+  const In** fill_values;
 };
 
 template <typename SampleDescT, typename Inloader>
@@ -247,11 +268,13 @@ DALI_DEVICE DALI_FORCEINLINE void stride_grid(const SampleDescT& sample_desc, co
   }
 }
 
-template <typename SampleDescT, typename InLoader>
-__global__ void conv2d(const SampleDescT* __restrict__ descs, InLoader in_loader) {
+template <typename SampleDescT, typename InLoaderFactory>
+__global__ void conv2d(const SampleDescT* __restrict__ descs, InLoaderFactory in_loader_factory) {
   using In = typename SampleDescT::In;
+  using InLoader = typename InLoaderFactory::T;
   extern __shared__ char shm[];
   auto sample_desc = descs[blockIdx.z];
+  auto&& in_loader = in_loader_factory(blockIdx.z);
   if (sample_desc.shape.in_workspace_width) {
     In* in_workspace = reinterpret_cast<In*>(shm);
     ShmInputConv<SampleDescT, InLoader> conv{sample_desc, in_loader, in_workspace};
@@ -291,8 +314,8 @@ struct Convolution2dGpu {
   void Run(KernelContext& ctx, const TensorListView<StorageGPU, Out, ndim>& out,
            const TensorListView<StorageGPU, const In, ndim>& in,
            const TensorListView<StorageGPU, const W, axes>& filters,
-           const TensorListView<StorageCPU, const int, 1>& anchors,
-           const conv::BorderSetup<In>& border_setup = {}) {
+           const TensorListView<StorageCPU, const int, 1>& anchors, DALIBorderMode border_mode,
+           const TensorListView<StorageGPU, const In, 0>& fill_values = {}) {
     auto num_samples = in.shape.num_samples();
 
     samples_desc_.clear();
@@ -307,10 +330,12 @@ struct Convolution2dGpu {
       const auto& in_out_shape = in_shapes[sample_idx];
       const auto& filter_shape = filter_shapes[sample_idx];
       const auto& anchor_view = anchors[sample_idx];
+      assert(anchor_view.shape.num_elements() == filter_ndim);
       int required_workspace;
       bool has_degenerated_extents;
-      auto shape_desc = SetupSampleDesc(required_workspace, has_degenerated_extents, sample_idx,
-                                        in_out_shape, filter_shape, anchor_view, shared_mem_limit);
+      auto shape_desc =
+          SetupSampleShapeDesc(required_workspace, has_degenerated_extents, sample_idx,
+                               in_out_shape, filter_shape, anchor_view, shared_mem_limit);
       max_height = std::max(max_height, shape_desc.h);
       max_width = std::max(max_width, shape_desc.wc);
       any_has_degenerated_extents |= has_degenerated_extents;
@@ -326,32 +351,51 @@ struct Convolution2dGpu {
     num_blocks_w = std::min(num_blocks_w, max_grid_width);
     dim3 grid(num_blocks_w, num_blocks_h, num_samples);
     dim3 block(block_width, 1, 1);
-    RunKernel(border_setup, any_has_degenerated_extents, [&](auto&& loader) {
-      conv::conv2d<<<grid, block, max_total_workspace, ctx.gpu.stream>>>(descs_dev, loader);
-      CUDA_CALL(cudaGetLastError());
-    });
+    RunKernelWithBorderMode(
+        ctx, border_mode, fill_values, any_has_degenerated_extents, [&](auto&& loader) {
+          conv::conv2d<<<grid, block, max_total_workspace, ctx.gpu.stream>>>(descs_dev, loader);
+          CUDA_CALL(cudaGetLastError());
+        });
   }
 
  protected:
   template <typename KernelLauncher>
-  void RunKernel(const conv::BorderSetup<In>& border_setup, bool has_degenerated_extents,
-                 KernelLauncher&& launch_kernel) {
-    if (border_setup.border_mode == conv::BorderMode::Reflect101) {
+  void RunKernelWithBorderMode(KernelContext& ctx, DALIBorderMode border_mode,
+                               const TensorListView<StorageGPU, const In, 0>& fill_values,
+                               bool has_degenerated_extents, KernelLauncher&& launch_kernel) {
+    if (border_mode == DALI_BORDER_REFLECT_101) {
+      // If any of the samples has some extent equal to 1, border handler needs extra
+      // check to prevent infinite loop. Extra check for every single position of the filter
+      // over an image is costly, so try to avoid it.
       BOOL_SWITCH(has_degenerated_extents, HasDegeneratedExtents,
-                  (conv::InLoaderBorderReflect101<In, HasDegeneratedExtents> loader{};
-                   launch_kernel(std::move(loader));));  // NOLINT
+                  (using Loader = conv::InLoaderBorderReflect101<In, HasDegeneratedExtents>;
+                   conv::InLoaderFactory<Loader> loader_factory{Loader{}};
+                   launch_kernel(std::move(loader_factory));));  // NOLINT
     } else {
-      assert(border_setup.border_mode == conv::BorderMode::Pad);
-      conv::InLoaderPad<In> loader{border_setup.pad};
-      launch_kernel(std::move(loader));
+      DALI_ENFORCE(border_mode == DALI_BORDER_FILL);
+      int num_samples = samples_desc_.size();
+      assert(fill_values.num_samples() == num_samples || fill_values.num_samples() == 0);
+      if (fill_values.num_samples() != num_samples) {
+        conv::InLoaderFactory<conv::InLoaderPad<In>> loader_factory{nullptr};
+        launch_kernel(std::move(loader_factory));
+      } else {
+        fill_values_.resize(num_samples);
+        for (int sample_idx = 0; sample_idx < num_samples; sample_idx++) {
+          fill_values_[sample_idx] = fill_values[sample_idx].data;
+        }
+        const In** fill_values_dev;
+        std::tie(fill_values_dev) = ctx.scratchpad->ToContiguousGPU(ctx.gpu.stream, fill_values_);
+        conv::InLoaderFactory<conv::InLoaderPad<In>> loader_factory{fill_values_dev};
+        launch_kernel(std::move(loader_factory));
+      }
     }
   }
 
   template <typename InShape, typename FilterShape, typename AnchorView>
-  conv::ShapeDesc SetupSampleDesc(int& required_worskapce, bool& has_degenerated_extents,
-                                  int sample_idx, const InShape& in_out_shape,
-                                  const FilterShape& filter_shape, const AnchorView& anchor,
-                                  int shared_mem_limit) {
+  conv::ShapeDesc SetupSampleShapeDesc(int& required_worskapce, bool& has_degenerated_extents,
+                                       int sample_idx, const InShape& in_out_shape,
+                                       const FilterShape& filter_shape, const AnchorView& anchor,
+                                       int shared_mem_limit) {
     auto filter_vol = volume(filter_shape);
     auto r = filter_shape[0];
     auto s = filter_shape[1];
@@ -430,6 +474,7 @@ struct Convolution2dGpu {
   }
 
   std::vector<SampleDescT> samples_desc_;
+  std::vector<const In*> fill_values_;
 };
 
 
