@@ -60,6 +60,9 @@ InputShapes infer_output_shape(const InputShapes& input_shapes, const FilterShap
         shape[spatial_dim_start + dim_idx] = 0;
       } else {
         shape[spatial_dim_start + dim_idx] -= filter_shape[dim_idx] - 1;
+        if (shape[spatial_dim_start + dim_idx] < 0) {
+          shape[spatial_dim_start + dim_idx] = 0;
+        }
       }
     }
     output_shapes.set_tensor_shape(sample_idx, shape);

@@ -52,6 +52,23 @@ struct SampleDesc {
   ShapeDesc shape;
 };
 
+struct InROIFull {
+  DALI_DEVICE DALI_FORCEINLINE InROIFull(const ShapeDesc& shape_desc)
+      : h_begin{0}, h_end{shape_desc.h}, wc_begin{0}, wc_end{shape_desc.wc} {}
+
+  int h_begin, h_end, wc_begin, wc_end;
+};
+
+struct InROIOnlyValid {
+  DALI_DEVICE DALI_FORCEINLINE InROIOnlyValid(const ShapeDesc& shape_desc)
+      : h_begin{-shape_desc.filter_top_anchor},
+        h_end{shape_desc.h - (shape_desc.r - 1 + shape_desc.filter_top_anchor)},
+        wc_begin{(-shape_desc.filter_left_anchor) * shape_desc.c},
+        wc_end{shape_desc.wc - (shape_desc.s - 1 + shape_desc.filter_left_anchor) * shape_desc.c} {}
+
+  int h_begin, h_end, wc_begin, wc_end;
+};
+
 template <typename Remap, typename In>
 struct InLoaderBorderRemap : protected Remap {
   DALI_HOST_DEV DALI_FORCEINLINE int remap_height(int idx, const ShapeDesc& sample_shape) const {
@@ -165,18 +182,20 @@ struct InLoaderPad {
   In fill_value;
 };
 
-template <typename InLoader>
+template <typename InLoader, typename InROI_>
 struct InLoaderFactory {
   using T = InLoader;
+  using InROI = InROI_;
   DALI_DEVICE DALI_FORCEINLINE T& operator()(int sample_idx) {
     return in_loader;
   }
   T in_loader;
 };
 
-template <typename In>
-struct InLoaderFactory<InLoaderPad<In>> {
+template <typename In, typename InROI_>
+struct InLoaderFactory<InLoaderPad<In>, InROI_> {
   using T = InLoaderPad<In>;
+  using InROI = InROI_;
   DALI_DEVICE DALI_FORCEINLINE T operator()(int sample_idx) {
     if (fill_values == nullptr) {
       return {0};
@@ -277,37 +296,38 @@ struct DirectInputConv {
   const Inloader& in_loader;
 };
 
-template <typename SampleDescT>
+template <typename SampleDescT, typename InROI>
 DALI_DEVICE DALI_FORCEINLINE void store_acc_in_global_output(
     typename SampleDescT::Out* __restrict__ out, const typename SampleDescT::Acc* __restrict__ acc,
-    const SampleDescT& sample_desc, int y_start, int x_start) {
+    const SampleDescT& sample_desc, int y_start, int x_start, const InROI& in_roi) {
   int x = x_start + threadIdx.x;
-  if (x < sample_desc.shape.wc) {
+  if (x < in_roi.wc_end) {
 #pragma unroll
     for (int lane = 0; lane < SampleDescT::lanes; lane++) {
       int y = y_start + lane;
-      if (y < sample_desc.shape.h) {
-        out[y * static_cast<int64_t>(sample_desc.shape.wc) + x] =
-            ConvertSat<typename SampleDescT::Out>(acc[lane]);
+      if (y < in_roi.h_end) {
+        out[(y - in_roi.h_begin) * static_cast<int64_t>(sample_desc.shape.wc) +
+            (x - in_roi.wc_begin)] = ConvertSat<typename SampleDescT::Out>(acc[lane]);
       }
     }
   }
 }
 
-template <typename SampleDescT, typename Conv>
-DALI_DEVICE DALI_FORCEINLINE void stride_grid(const SampleDescT& sample_desc, const Conv& conv) {
+template <typename SampleDescT, typename Conv, typename InROI>
+DALI_DEVICE DALI_FORCEINLINE void stride_grid(const SampleDescT& sample_desc, const Conv& conv,
+                                              const InROI& in_roi) {
   constexpr int lanes = SampleDescT::lanes;
   const auto* in = sample_desc.in;
   auto* out = sample_desc.out;
   for (int f = 0; f < sample_desc.shape.f;
        f++, in += sample_desc.shape.hwc, out += sample_desc.shape.hwc) {
-    for (int y_start = lanes * blockIdx.y; y_start < sample_desc.shape.h;
+    for (int y_start = lanes * blockIdx.y + in_roi.h_begin; y_start < in_roi.h_end;
          y_start += gridDim.y * lanes) {
-      for (int x_start = blockDim.x * blockIdx.x; x_start < sample_desc.shape.wc;
+      for (int x_start = blockDim.x * blockIdx.x + in_roi.wc_begin; x_start < in_roi.wc_end;
            x_start += gridDim.x * blockDim.x) {
         typename SampleDescT::Acc acc[lanes] = {};
         conv.compute(acc, in, y_start, x_start);
-        store_acc_in_global_output(out, acc, sample_desc, y_start, x_start);
+        store_acc_in_global_output(out, acc, sample_desc, y_start, x_start, in_roi);
       }
     }
   }
@@ -317,16 +337,18 @@ template <typename SampleDescT, typename InLoaderFactory>
 __global__ void conv2d(const SampleDescT* __restrict__ descs, InLoaderFactory in_loader_factory) {
   using In = typename SampleDescT::In;
   using InLoader = typename InLoaderFactory::T;
+  using InROI = typename InLoaderFactory::InROI;
   extern __shared__ char shm[];
   auto sample_desc = descs[blockIdx.z];
   auto&& in_loader = in_loader_factory(blockIdx.z);
+  InROI in_roi(sample_desc.shape);
   if (sample_desc.shape.in_workspace_width) {
     In* in_workspace = reinterpret_cast<In*>(shm);
     ShmInputConv<SampleDescT, InLoader> conv{sample_desc, in_loader, in_workspace};
-    stride_grid(sample_desc, conv);
+    stride_grid(sample_desc, conv, in_roi);
   } else {
     DirectInputConv<SampleDescT, InLoader> conv{sample_desc, in_loader};
-    stride_grid(sample_desc, conv);
+    stride_grid(sample_desc, conv, in_roi);
   }
 }
 }  // namespace conv
@@ -369,7 +391,7 @@ struct Convolution2dGpu {
     const auto& filter_shapes = filters.shape;
 
     int shared_mem_limit = GetSharedMemPerBlock();
-    int max_width = 0, max_height = 0, max_total_workspace = 0;
+    int max_total_workspace = 0;
     bool any_has_degenerated_extents = false;
     for (int sample_idx = 0; sample_idx < num_samples; sample_idx++) {
       const auto& in_shape = in_shapes[sample_idx];
@@ -381,13 +403,13 @@ struct Convolution2dGpu {
       auto shape_desc =
           SetupSampleShapeDesc(required_workspace, has_degenerated_extents, sample_idx, in_shape,
                                filter_shape, anchor_view, shared_mem_limit);
-      max_height = std::max(max_height, shape_desc.h);
-      max_width = std::max(max_width, shape_desc.wc);
       any_has_degenerated_extents |= has_degenerated_extents;
       max_total_workspace = std::max(max_total_workspace, required_workspace);
       samples_desc_.push_back({out.tensor_data(sample_idx), in.tensor_data(sample_idx),
                                filters.tensor_data(sample_idx), shape_desc});
     }
+    int max_width = 0, max_height = 0;
+    ComputeExtentsMax(max_height, max_width, out.shape);
     SampleDescT* descs_dev;
     std::tie(descs_dev) = ctx.scratchpad->ToContiguousGPU(ctx.gpu.stream, samples_desc_);
     int num_blocks_h = div_ceil(max_height, lanes);
@@ -408,46 +430,80 @@ struct Convolution2dGpu {
   void RunKernelWithBorderMode(KernelContext& ctx, DALIBorderMode border_mode,
                                const TensorListView<StorageGPU, const In, 0>& fill_values,
                                bool has_degenerated_extents, KernelLauncher&& launch_kernel) {
-    if (border_mode == DALI_BORDER_REFLECT_101) {
-      // If any of the samples has some extent equal to 1, border handler needs extra
-      // check to prevent infinite loop. Extra check for every single position of the filter
-      // over an image is costly, so try to avoid it.
-      BOOL_SWITCH(
-          has_degenerated_extents, HasDegeneratedExtents,
-          (using Loader = conv::InLoaderBorderRemap<conv::Reflect101<HasDegeneratedExtents>, In>;
-           conv::InLoaderFactory<Loader> loader_factory{Loader{}};
-           launch_kernel(std::move(loader_factory));));  // NOLINT
-    } else if (border_mode == DALI_BORDER_REFLECT_1001) {
-      using Loader = conv::InLoaderBorderRemap<conv::Reflect1001, In>;
-      conv::InLoaderFactory<Loader> loader_factory{Loader{}};
+    switch (border_mode) {
+      case DALI_BORDER_REFLECT_101:
+        RunKernelBorder101(ctx, has_degenerated_extents, std::move(launch_kernel));
+        break;
+      case DALI_BORDER_REFLECT_1001:
+        RunKernelBorderRemap<conv::Reflect1001>(ctx, std::move(launch_kernel));
+        break;
+      case DALI_BORDER_REPLICATE:
+        RunKernelBorderRemap<conv::Replicate>(ctx, std::move(launch_kernel));
+        break;
+      case DALI_BORDER_WRAP:
+        RunKernelBorderRemap<conv::Wrap>(ctx, std::move(launch_kernel));
+        break;
+      case DALI_BORDER_FILL:
+        RunKernelBorderFill(ctx, fill_values, std::move(launch_kernel));
+        break;
+      default:
+        DALI_FAIL(
+            make_string("Unsupported border mode was specified: ", to_string(border_mode), "."));
+    }
+  }
+
+  template <typename KernelLauncher>
+  void RunKernelBorder101(KernelContext& ctx, bool has_degenerated_extents,
+                          KernelLauncher&& launch_kernel) {
+    // If any of the samples has some extent equal to 1, border handler needs extra
+    // check to prevent infinite loop. Extra check for every single position of the filter
+    // over an image is costly, so try to avoid it.
+    BOOL_SWITCH(
+        has_degenerated_extents, HasDegeneratedExtents,
+        (using Loader = conv::InLoaderBorderRemap<conv::Reflect101<HasDegeneratedExtents>, In>;
+         conv::InLoaderFactory<Loader, conv::InROIFull> loader_factory{Loader{}};
+         launch_kernel(std::move(loader_factory));));  // NOLINT
+  }
+
+  template <typename Remap, typename KernelLauncher>
+  void RunKernelBorderRemap(KernelContext& ctx, KernelLauncher&& launch_kernel) {
+    using Loader = conv::InLoaderBorderRemap<Remap, In>;
+    conv::InLoaderFactory<Loader, conv::InROIFull> loader_factory{Loader{}};
+    launch_kernel(std::move(loader_factory));
+  }
+
+  template <typename KernelLauncher>
+  void RunKernelBorderFill(KernelContext& ctx,
+                           const TensorListView<StorageGPU, const In, 0>& fill_values,
+                           KernelLauncher&& launch_kernel) {
+    int num_samples = samples_desc_.size();
+    assert(fill_values.num_samples() == num_samples || fill_values.num_samples() == 0);
+    if (fill_values.num_samples() != num_samples) {
+      conv::InLoaderFactory<conv::InLoaderPad<In>, conv::InROIFull> loader_factory{nullptr};
       launch_kernel(std::move(loader_factory));
-    } else if (border_mode == DALI_BORDER_REPLICATE) {
-      using Loader = conv::InLoaderBorderRemap<conv::Replicate, In>;
-      conv::InLoaderFactory<Loader> loader_factory{Loader{}};
-      launch_kernel(std::move(loader_factory));
-    } else if (border_mode == DALI_BORDER_WRAP) {
-      using Loader = conv::InLoaderBorderRemap<conv::Wrap, In>;
-      conv::InLoaderFactory<Loader> loader_factory{Loader{}};
-      launch_kernel(std::move(loader_factory));
-    } else if (border_mode == DALI_BORDER_FILL) {
-      int num_samples = samples_desc_.size();
-      assert(fill_values.num_samples() == num_samples || fill_values.num_samples() == 0);
-      if (fill_values.num_samples() != num_samples) {
-        conv::InLoaderFactory<conv::InLoaderPad<In>> loader_factory{nullptr};
-        launch_kernel(std::move(loader_factory));
-      } else {
-        fill_values_.resize(num_samples);
-        for (int sample_idx = 0; sample_idx < num_samples; sample_idx++) {
-          fill_values_[sample_idx] = fill_values[sample_idx].data;
-        }
-        const In** fill_values_dev;
-        std::tie(fill_values_dev) = ctx.scratchpad->ToContiguousGPU(ctx.gpu.stream, fill_values_);
-        conv::InLoaderFactory<conv::InLoaderPad<In>> loader_factory{fill_values_dev};
-        launch_kernel(std::move(loader_factory));
-      }
     } else {
-      DALI_FAIL(
-          make_string("Unsupported border mode was specified: ", to_string(border_mode), "."));
+      fill_values_.resize(num_samples);
+      for (int sample_idx = 0; sample_idx < num_samples; sample_idx++) {
+        fill_values_[sample_idx] = fill_values[sample_idx].data;
+      }
+      const In** fill_values_dev;
+      std::tie(fill_values_dev) = ctx.scratchpad->ToContiguousGPU(ctx.gpu.stream, fill_values_);
+      conv::InLoaderFactory<conv::InLoaderPad<In>, conv::InROIFull> loader_factory{fill_values_dev};
+      launch_kernel(std::move(loader_factory));
+    }
+  }
+
+  template <typename OutShapes>
+  void ComputeExtentsMax(int& max_height, int& max_width, const OutShapes& out_shapes) {
+    for (int sample_idx = 0; sample_idx < out_shapes.num_samples(); sample_idx++) {
+      const auto& out_shape = out_shapes[sample_idx];
+      // Assuming those are no greater than the in_shapes,
+      // overflow limits were already checked for the input
+      int h = out_shape[num_sequence_dim];
+      int w = out_shape[num_sequence_dim + 1];
+      int c = has_channel_dim ? out_shape[num_sequence_dim + 2] : 1;
+      max_height = std::max(max_height, h);
+      max_width = std::max(max_width, w * c);
     }
   }
 
