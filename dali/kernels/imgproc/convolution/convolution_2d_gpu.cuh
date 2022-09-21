@@ -372,15 +372,15 @@ struct Convolution2dGpu {
     int max_width = 0, max_height = 0, max_total_workspace = 0;
     bool any_has_degenerated_extents = false;
     for (int sample_idx = 0; sample_idx < num_samples; sample_idx++) {
-      const auto& in_out_shape = in_shapes[sample_idx];
+      const auto& in_shape = in_shapes[sample_idx];
       const auto& filter_shape = filter_shapes[sample_idx];
       const auto& anchor_view = anchors[sample_idx];
       assert(anchor_view.shape.num_elements() == filter_ndim);
       int required_workspace;
       bool has_degenerated_extents;
       auto shape_desc =
-          SetupSampleShapeDesc(required_workspace, has_degenerated_extents, sample_idx,
-                               in_out_shape, filter_shape, anchor_view, shared_mem_limit);
+          SetupSampleShapeDesc(required_workspace, has_degenerated_extents, sample_idx, in_shape,
+                               filter_shape, anchor_view, shared_mem_limit);
       max_height = std::max(max_height, shape_desc.h);
       max_width = std::max(max_width, shape_desc.wc);
       any_has_degenerated_extents |= has_degenerated_extents;
@@ -453,7 +453,7 @@ struct Convolution2dGpu {
 
   template <typename InShape, typename FilterShape, typename AnchorView>
   conv::ShapeDesc SetupSampleShapeDesc(int& required_worskapce, bool& has_degenerated_extents,
-                                       int sample_idx, const InShape& in_out_shape,
+                                       int sample_idx, const InShape& in_shape,
                                        const FilterShape& filter_shape, const AnchorView& anchor,
                                        int shared_mem_limit) {
     auto filter_vol = volume(filter_shape);
@@ -469,10 +469,10 @@ struct Convolution2dGpu {
                     filter_shape, "for sample of idx ", sample_idx, "."));
     filter_top_anchor = -filter_top_anchor;
     filter_left_anchor = -filter_left_anchor;
-    auto f = has_sequence_dim ? in_out_shape[0] : 1;
-    auto h = in_out_shape[num_sequence_dim];
-    auto w = in_out_shape[num_sequence_dim + 1];
-    auto c = has_channel_dim ? in_out_shape[num_sequence_dim + 2] : 1;
+    auto f = has_sequence_dim ? in_shape[0] : 1;
+    auto h = in_shape[num_sequence_dim];
+    auto w = in_shape[num_sequence_dim + 1];
+    auto c = has_channel_dim ? in_shape[num_sequence_dim + 2] : 1;
     auto wc = w * c;
     auto hwc = h * wc;
     has_degenerated_extents = h == 1 || w == 1;

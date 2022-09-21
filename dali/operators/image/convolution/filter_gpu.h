@@ -52,10 +52,11 @@ class FilterOpGpu : public OpImplBase<GPUBackend> {
   bool SetupImpl(std::vector<OutputDesc>& output_desc, const workspace_t<GPUBackend>& ws) override {
     ctx_.gpu.stream = ws.stream();
     const auto& input = ws.template Input<GPUBackend>(0);
+    int num_samples = input.num_samples();
+    anchor_arg_.Acquire(spec_, ws, num_samples, TensorShape<1>{filter_ndim});
     output_desc.resize(1);
     output_desc[0].type = type2id<Out>::value;
-    output_desc[0].shape = input.shape();
-    anchor_arg_.Acquire(spec_, ws, input.num_samples(), TensorShape<1>{filter_ndim});
+    InferOutputShape(output_desc[0].shape, ws);
     return true;
   }
 
@@ -81,6 +82,31 @@ class FilterOpGpu : public OpImplBase<GPUBackend> {
   }
 
  private:
+  template <typename OutShapes>
+  void InferOutputShape(OutShapes &out_shapes, const workspace_t<GPUBackend>& ws) {
+    out_shapes = ws.GetInputShape(0);
+    if (border_mode_ == DALI_BORDER_VALID) {
+      ShrinkToValid(out_shapes, ws.GetInputShape(1));
+    }
+  }
+
+  template <typename OutShapes, typename FilterShapes>
+  void ShrinkToValid(OutShapes& shapes, const FilterShapes& filter_shapes) {
+    int spatial_dim_start = num_seq_dims;
+    for (int sample_idx = 0; sample_idx < shapes.num_samples(); sample_idx++) {
+      auto shape = shapes[sample_idx];
+      const auto& filter_shape = filter_shapes[sample_idx];
+      for (int dim_idx = 0; dim_idx < filter_ndim; dim_idx++) {
+        if (filter_shape[dim_idx] == 0) {
+          shape[spatial_dim_start + dim_idx] = 0;
+        } else {
+          shape[spatial_dim_start + dim_idx] -= filter_shape[dim_idx] - 1;
+        }
+      }
+      shapes.set_tensor_shape(sample_idx, shape);
+    }
+  }
+
   TensorListView<StorageGPU, const W, filter_ndim> GetFilterViews(
       const workspace_t<GPUBackend>& ws) {
     if (ws.template InputIsType<GPUBackend>(1)) {
