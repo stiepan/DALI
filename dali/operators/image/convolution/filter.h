@@ -43,6 +43,30 @@ inline InputLayoutDesc parse_input_layout(const TensorLayout& layout) {
   return input_desc;
 }
 
+template <typename InputShapes, typename FilterShapes>
+InputShapes infer_output_shape(const InputShapes& input_shapes, const FilterShapes& filter_shapes,
+                               DALIBorderMode border_mode, int spatial_dim_start) {
+  if (border_mode != DALI_BORDER_VALID) {
+    return input_shapes;
+  }
+  auto num_samples = input_shapes.num_samples();
+  InputShapes output_shapes{};
+  output_shapes.resize(num_samples, input_shapes.sample_dim());
+  for (int sample_idx = 0; sample_idx < num_samples; sample_idx++) {
+    auto shape = input_shapes[sample_idx];
+    const auto& filter_shape = filter_shapes[sample_idx];
+    for (int dim_idx = 0; dim_idx < filter_shapes.sample_dim(); dim_idx++) {
+      if (filter_shape[dim_idx] == 0) {
+        shape[spatial_dim_start + dim_idx] = 0;
+      } else {
+        shape[spatial_dim_start + dim_idx] -= filter_shape[dim_idx] - 1;
+      }
+    }
+    output_shapes.set_tensor_shape(sample_idx, shape);
+  }
+  return output_shapes;
+}
+
 }  // namespace filter
 
 #define FILTER_INPUT_SUPPORTED_TYPES \
