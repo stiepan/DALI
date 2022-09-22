@@ -56,14 +56,18 @@ InputShapes infer_output_shape(const InputShapes& input_shapes, const FilterShap
     auto shape = input_shapes[sample_idx];
     const auto& filter_shape = filter_shapes[sample_idx];
     for (int dim_idx = 0; dim_idx < filter_shapes.sample_dim(); dim_idx++) {
-      if (filter_shape[dim_idx] == 0) {
-        shape[spatial_dim_start + dim_idx] = 0;
-      } else {
-        shape[spatial_dim_start + dim_idx] -= filter_shape[dim_idx] - 1;
-        if (shape[spatial_dim_start + dim_idx] < 0) {
-          shape[spatial_dim_start + dim_idx] = 0;
-        }
-      }
+      DALI_ENFORCE(
+          filter_shape[dim_idx] > 0,
+          make_string(
+              "Filter of volume zero is not supported, got zero-volume filter for sample of idx ",
+              sample_idx, "."));
+      shape[spatial_dim_start + dim_idx] -= filter_shape[dim_idx] - 1;
+      DALI_ENFORCE(
+          shape[spatial_dim_start + dim_idx] >= 0,
+          make_string(
+              "Filter for sample of idx ", sample_idx,
+              " is bigger than the sample. This is not allowed when ``border_mode`` is set to ",
+              to_string(DALI_BORDER_VALID), "."));
     }
     output_shapes.set_tensor_shape(sample_idx, shape);
   }

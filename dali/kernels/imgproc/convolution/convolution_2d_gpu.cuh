@@ -52,22 +52,25 @@ struct SampleDesc {
   ShapeDesc shape;
 };
 
-struct InROIFull {
-  DALI_DEVICE DALI_FORCEINLINE InROIFull(const ShapeDesc& shape_desc)
-      : h_begin{0}, h_end{shape_desc.h}, wc_begin{0}, wc_end{shape_desc.wc} {}
-
+struct ROI {
   int h_begin, h_end, wc_begin, wc_end;
+  int h, wc;
+  int64_t hwc;
 };
 
-struct InROIOnlyValid {
-  DALI_DEVICE DALI_FORCEINLINE InROIOnlyValid(const ShapeDesc& shape_desc)
-      : h_begin{-shape_desc.filter_top_anchor},
-        h_end{shape_desc.h - (shape_desc.r - 1 + shape_desc.filter_top_anchor)},
-        wc_begin{(-shape_desc.filter_left_anchor) * shape_desc.c},
-        wc_end{shape_desc.wc - (shape_desc.s - 1 + shape_desc.filter_left_anchor) * shape_desc.c} {}
+DALI_DEVICE DALI_FORCEINLINE ROI roi_full(const ShapeDesc& shape_desc) {
+  return {0, shape_desc.h, 0, shape_desc.wc, shape_desc.h, shape_desc.wc, shape_desc.hwc};
+}
 
-  int h_begin, h_end, wc_begin, wc_end;
-};
+DALI_DEVICE DALI_FORCEINLINE ROI roi_only_valid(const ShapeDesc& shape_desc) {
+  int h_begin = -shape_desc.filter_top_anchor;
+  int h_end = shape_desc.h - (shape_desc.r - 1 + shape_desc.filter_top_anchor);
+  int wc_begin = (-shape_desc.filter_left_anchor) * shape_desc.c;
+  int wc_end = shape_desc.wc - (shape_desc.s - 1 + shape_desc.filter_left_anchor) * shape_desc.c;
+  int h = h_end - h_begin;
+  int wc = wc_end - wc_begin;
+  return {h_begin, h_end, wc_begin, wc_end, h, wc, h * wc};
+}
 
 template <typename Remap, typename In>
 struct InLoaderBorderRemap : protected Remap {
@@ -182,20 +185,18 @@ struct InLoaderPad {
   In fill_value;
 };
 
-template <typename InLoader, typename InROI_>
+template <typename InLoader>
 struct InLoaderFactory {
   using T = InLoader;
-  using InROI = InROI_;
   DALI_DEVICE DALI_FORCEINLINE T& operator()(int sample_idx) {
     return in_loader;
   }
   T in_loader;
 };
 
-template <typename In, typename InROI_>
-struct InLoaderFactory<InLoaderPad<In>, InROI_> {
+template <typename In>
+struct InLoaderFactory<InLoaderPad<In>> {
   using T = InLoaderPad<In>;
-  using InROI = InROI_;
   DALI_DEVICE DALI_FORCEINLINE T operator()(int sample_idx) {
     if (fill_values == nullptr) {
       return {0};
@@ -296,59 +297,60 @@ struct DirectInputConv {
   const Inloader& in_loader;
 };
 
-template <typename SampleDescT, typename InROI>
-DALI_DEVICE DALI_FORCEINLINE void store_acc_in_global_output(
-    typename SampleDescT::Out* __restrict__ out, const typename SampleDescT::Acc* __restrict__ acc,
-    const SampleDescT& sample_desc, int y_start, int x_start, const InROI& in_roi) {
+template <int lanes, typename Out, typename Acc>
+DALI_DEVICE DALI_FORCEINLINE void store_acc_in_global_output(Out* __restrict__ out,
+                                                             const Acc* __restrict__ acc,
+                                                             const ROI& roi, int y_start,
+                                                             int x_start) {
   int x = x_start + threadIdx.x;
-  if (x < in_roi.wc_end) {
+  if (x < roi.wc_end) {
 #pragma unroll
-    for (int lane = 0; lane < SampleDescT::lanes; lane++) {
+    for (int lane = 0; lane < lanes; lane++) {
       int y = y_start + lane;
-      if (y < in_roi.h_end) {
-        out[(y - in_roi.h_begin) * static_cast<int64_t>(sample_desc.shape.wc) +
-            (x - in_roi.wc_begin)] = ConvertSat<typename SampleDescT::Out>(acc[lane]);
+      if (y < roi.h_end) {
+        out[(y - roi.h_begin) * static_cast<int64_t>(roi.wc) + (x - roi.wc_begin)] =
+            ConvertSat<Out>(acc[lane]);
       }
     }
   }
 }
 
-template <typename SampleDescT, typename Conv, typename InROI>
+template <typename SampleDescT, typename Conv>
 DALI_DEVICE DALI_FORCEINLINE void stride_grid(const SampleDescT& sample_desc, const Conv& conv,
-                                              const InROI& in_roi) {
+                                              const ROI& roi) {
   constexpr int lanes = SampleDescT::lanes;
   const auto* in = sample_desc.in;
   auto* out = sample_desc.out;
   for (int f = 0; f < sample_desc.shape.f;
        f++, in += sample_desc.shape.hwc, out += sample_desc.shape.hwc) {
-    for (int y_start = lanes * blockIdx.y + in_roi.h_begin; y_start < in_roi.h_end;
+    for (int y_start = lanes * blockIdx.y + roi.h_begin; y_start < roi.h_end;
          y_start += gridDim.y * lanes) {
-      for (int x_start = blockDim.x * blockIdx.x + in_roi.wc_begin; x_start < in_roi.wc_end;
+      for (int x_start = blockDim.x * blockIdx.x + roi.wc_begin; x_start < roi.wc_end;
            x_start += gridDim.x * blockDim.x) {
         typename SampleDescT::Acc acc[lanes] = {};
         conv.compute(acc, in, y_start, x_start);
-        store_acc_in_global_output(out, acc, sample_desc, y_start, x_start, in_roi);
+        store_acc_in_global_output<lanes>(out, acc, roi, y_start, x_start);
       }
     }
   }
 }
 
-template <typename SampleDescT, typename InLoaderFactory>
-__global__ void conv2d(const SampleDescT* __restrict__ descs, InLoaderFactory in_loader_factory) {
+template <typename SampleDescT, typename InLoaderFactory, typename ROIFn>
+__global__ void conv2d(const SampleDescT* __restrict__ descs, InLoaderFactory in_loader_factory,
+                       const ROIFn& roi_fn) {
   using In = typename SampleDescT::In;
   using InLoader = typename InLoaderFactory::T;
-  using InROI = typename InLoaderFactory::InROI;
   extern __shared__ char shm[];
   auto sample_desc = descs[blockIdx.z];
   auto&& in_loader = in_loader_factory(blockIdx.z);
-  InROI in_roi(sample_desc.shape);
+  ROI roi = roi_fn(sample_desc.shape);
   if (sample_desc.shape.in_workspace_width) {
     In* in_workspace = reinterpret_cast<In*>(shm);
     ShmInputConv<SampleDescT, InLoader> conv{sample_desc, in_loader, in_workspace};
-    stride_grid(sample_desc, conv, in_roi);
+    stride_grid(sample_desc, conv, roi);
   } else {
     DirectInputConv<SampleDescT, InLoader> conv{sample_desc, in_loader};
-    stride_grid(sample_desc, conv, in_roi);
+    stride_grid(sample_desc, conv, roi);
   }
 }
 }  // namespace conv
@@ -418,11 +420,12 @@ struct Convolution2dGpu {
     num_blocks_w = std::min(num_blocks_w, max_grid_width);
     dim3 grid(num_blocks_w, num_blocks_h, num_samples);
     dim3 block(block_width, 1, 1);
-    RunKernelWithBorderMode(
-        ctx, border_mode, fill_values, any_has_degenerated_extents, [&](auto&& loader) {
-          conv::conv2d<<<grid, block, max_total_workspace, ctx.gpu.stream>>>(descs_dev, loader);
-          CUDA_CALL(cudaGetLastError());
-        });
+    RunKernelWithBorderMode(ctx, border_mode, fill_values, any_has_degenerated_extents,
+                            [&](auto&& loader, auto& roi_fn) {
+                              conv::conv2d<<<grid, block, max_total_workspace, ctx.gpu.stream>>>(
+                                  descs_dev, loader, roi_fn);
+                              CUDA_CALL(cudaGetLastError());
+                            });
   }
 
  protected:
@@ -435,21 +438,32 @@ struct Convolution2dGpu {
         RunKernelBorder101(ctx, has_degenerated_extents, std::move(launch_kernel));
         break;
       case DALI_BORDER_REFLECT_1001:
-        RunKernelBorderRemap<conv::Reflect1001>(ctx, std::move(launch_kernel));
+        RunKernelBorderRemap<conv::Reflect1001>(ctx, std::move(launch_kernel), conv::roi_full);
         break;
       case DALI_BORDER_REPLICATE:
-        RunKernelBorderRemap<conv::Replicate>(ctx, std::move(launch_kernel));
+        RunKernelBorderRemap<conv::Replicate>(ctx, std::move(launch_kernel), conv::roi_full);
         break;
       case DALI_BORDER_WRAP:
-        RunKernelBorderRemap<conv::Wrap>(ctx, std::move(launch_kernel));
+        RunKernelBorderRemap<conv::Wrap>(ctx, std::move(launch_kernel), conv::roi_full);
         break;
       case DALI_BORDER_FILL:
         RunKernelBorderFill(ctx, fill_values, std::move(launch_kernel));
+        break;
+      case DALI_BORDER_VALID:
+        RunKernelBorderRemap(ctx, std::move(launch_kernel), conv::roi_only_valid);
         break;
       default:
         DALI_FAIL(
             make_string("Unsupported border mode was specified: ", to_string(border_mode), "."));
     }
+  }
+
+  template <typename Remap = conv::Reflect1001, typename KernelLauncher, typename ROIFn>
+  void RunKernelBorderRemap(KernelContext& ctx, KernelLauncher&& launch_kernel,
+                            const ROIFn& roi_fn) {
+    using Loader = conv::InLoaderBorderRemap<Remap, In>;
+    conv::InLoaderFactory<Loader> loader_factory{Loader{}};
+    launch_kernel(std::move(loader_factory), roi_fn);
   }
 
   template <typename KernelLauncher>
@@ -461,15 +475,8 @@ struct Convolution2dGpu {
     BOOL_SWITCH(
         has_degenerated_extents, HasDegeneratedExtents,
         (using Loader = conv::InLoaderBorderRemap<conv::Reflect101<HasDegeneratedExtents>, In>;
-         conv::InLoaderFactory<Loader, conv::InROIFull> loader_factory{Loader{}};
-         launch_kernel(std::move(loader_factory));));  // NOLINT
-  }
-
-  template <typename Remap, typename KernelLauncher>
-  void RunKernelBorderRemap(KernelContext& ctx, KernelLauncher&& launch_kernel) {
-    using Loader = conv::InLoaderBorderRemap<Remap, In>;
-    conv::InLoaderFactory<Loader, conv::InROIFull> loader_factory{Loader{}};
-    launch_kernel(std::move(loader_factory));
+         conv::InLoaderFactory<Loader> loader_factory{Loader{}};
+         launch_kernel(std::move(loader_factory), conv::roi_full);));  // NOLINT
   }
 
   template <typename KernelLauncher>
@@ -479,8 +486,8 @@ struct Convolution2dGpu {
     int num_samples = samples_desc_.size();
     assert(fill_values.num_samples() == num_samples || fill_values.num_samples() == 0);
     if (fill_values.num_samples() != num_samples) {
-      conv::InLoaderFactory<conv::InLoaderPad<In>, conv::InROIFull> loader_factory{nullptr};
-      launch_kernel(std::move(loader_factory));
+      conv::InLoaderFactory<conv::InLoaderPad<In>> loader_factory{nullptr};
+      launch_kernel(std::move(loader_factory), conv::roi_full);
     } else {
       fill_values_.resize(num_samples);
       for (int sample_idx = 0; sample_idx < num_samples; sample_idx++) {
@@ -488,8 +495,8 @@ struct Convolution2dGpu {
       }
       const In** fill_values_dev;
       std::tie(fill_values_dev) = ctx.scratchpad->ToContiguousGPU(ctx.gpu.stream, fill_values_);
-      conv::InLoaderFactory<conv::InLoaderPad<In>, conv::InROIFull> loader_factory{fill_values_dev};
-      launch_kernel(std::move(loader_factory));
+      conv::InLoaderFactory<conv::InLoaderPad<In>> loader_factory{fill_values_dev};
+      launch_kernel(std::move(loader_factory), conv::roi_full);
     }
   }
 

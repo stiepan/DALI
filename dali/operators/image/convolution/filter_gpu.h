@@ -66,15 +66,16 @@ class FilterOpGpu : public OpImplBase<GPUBackend> {
     auto& output = ws.template Output<GPUBackend>(0);
     output.SetLayout(input.GetLayout());
 
-    auto processed_shape = input.shape();
+    auto in_shape = input.shape();
+    auto out_shape = output.shape();
     if (is_sequence) {
-      processed_shape = collapse_dims(processed_shape, {{0, num_seq_dims}});
+      in_shape = collapse_dims(in_shape, {{0, num_seq_dims}});
+      out_shape = collapse_dims(out_shape, {{0, num_seq_dims}});
     }
-    auto static_shape = processed_shape.to_static<ndim>();
     auto in_views_dyn = view<const In>(input);
     auto out_views_dyn = view<Out>(output);
-    auto in_views = reshape<ndim>(in_views_dyn, static_shape);
-    auto out_views = reshape<ndim>(out_views_dyn, static_shape);
+    auto in_views = reshape<ndim>(in_views_dyn, in_shape.to_static<ndim>());
+    auto out_views = reshape<ndim>(out_views_dyn, out_shape.to_static<ndim>());
     auto anchor_views = anchor_arg_.get();
     auto filter_views = GetFilterViews(ws);
     auto fill_value_views = GetFillValueViews(ws, input.num_samples());
