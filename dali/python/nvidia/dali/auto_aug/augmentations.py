@@ -1,0 +1,184 @@
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from nvidia.dali import fn
+import numpy as np
+
+from core.wrapper import augmentation
+"""
+This module contains a standard suite of augmentations used by AutoAugment policy for ImageNet,
+RandAugment and TrivialAugment. The augmentations are implemented in terms of DALI operators.
+The automatic augmentation schemes parametrize the operations with a magnitude, which,
+intuitively, states how strong the given operation should be.
+
+Each operation defines a range of magnitudes it can accept. The range is divided into a number
+of bins. Then, which bin should be used for a given operation and sample is defined differently
+by different automatic augmentations.
+
+For TrivialAugment, the magnitude bins are chosen randomly every time for every sample.
+In case of RandAugment, the magnitude bin is a fixed hyper-parameter.
+For AutoAugment, the magnitude is a fixed parameter of a given sub-policy.
+
+For some operations, it makes sense to randomly negate the magnitudes to increase
+the variability in the augmented data. Take `fn.random` as an example. Here, the magnitude is
+an angle of the rotation. Negating the angle switches if the rotation is done
+clock- or counterclockwise.
+
+The `@augmentation` lets you to specify what should the range of magnitudes and if the magnitude
+should be randomly negated. Additionally, the `as_param` helps to separate the computation of
+the parameter based on the magnitude from applying the operation - all the parameters will be computed
+once and reused between iterations as DALI `types.Constant`.
+
+The augmentations in this module are defined with some default ranges passed to `@augmentation`.
+The parameters can be easily adjusted. For example, to increase the magnitudes range
+of `shear_x`, you can create `my_shear_x = shear_x.augmentation(mag_range=(0, 0.5))`.
+"""
+
+
+def warp_x_param(magnitude):
+    return [magnitude, 0]
+
+
+def warp_y_param(magnitude):
+    return [0, magnitude]
+
+
+@augmentation(mag_range=(0, 0.3), randomly_negate=True, as_param=warp_x_param)
+def shear_x(samples, parameter):
+    mt = fn.transforms.shear(shear=parameter)
+    return fn.warp_affine(samples, matrix=mt, fill_value=0, inverse_map=False)
+
+
+@augmentation(mag_range=(0, 0.3), randomly_negate=True, as_param=warp_y_param)
+def shear_y(samples, parameter):
+    mt = fn.transforms.shear(shear=parameter)
+    return fn.warp_affine(samples, matrix=mt, fill_value=0, inverse_map=False)
+
+
+@augmentation(mag_range=(0, 0.45), randomly_negate=True, as_param=warp_x_param)
+def translate_x(samples, parameter, shapes):
+    max_offset = shapes[-3:-2]
+    parameter *= max_offset
+    mt = fn.transforms.translation(offset=parameter)
+    return fn.warp_affine(samples, matrix=mt, fill_value=0, inverse_map=False)
+
+
+@augmentation(mag_range=(0, 250), randomly_negate=True, as_param=warp_x_param)
+def translate_x_no_shape(samples, parameter):
+    mt = fn.transforms.translation(offset=parameter)
+    return fn.warp_affine(samples, matrix=mt, fill_value=0, inverse_map=False)
+
+
+@augmentation(mag_range=(0, 0.45), randomly_negate=True, as_param=warp_y_param)
+def translate_y(samples, parameter, shapes):
+    max_offset = shapes[-3:-2]
+    parameter *= max_offset
+    mt = fn.transforms.translation(offset=parameter)
+    return fn.warp_affine(samples, matrix=mt, fill_value=0, inverse_map=False)
+
+
+@augmentation(mag_range=(0, 250), randomly_negate=True, as_param=warp_y_param)
+def translate_y_no_shape(samples, parameter):
+    mt = fn.transforms.translation(offset=parameter)
+    return fn.warp_affine(samples, matrix=mt, fill_value=0, inverse_map=False)
+
+
+@augmentation(mag_range=(0, 30), randomly_negate=True)
+def rotate(samples, parameter):
+    return fn.rotate(samples, angle=parameter, fill_value=0)
+
+
+def shift_enhance_range(magnitude):
+    """The `enhance` operations (brightness, contrast, color, sharpness) accept magnitudes
+    from [0, 2] range. However, the neutral magnitude is not 0 but 1 and the intuitive strength
+    of the operation increases the further the magnitude is from 1. So, we specify magnitudes range
+    to be in [0, 1] range, expect it to be randomly negate it and then shift it by 1"""
+    return 1 + magnitude
+
+
+@augmentation(mag_range=(0, 0.9), randomly_negate=True, as_param=shift_enhance_range)
+def brightness(samples, parameter):
+    return fn.brightness(samples, brightness=parameter)
+
+
+@augmentation(mag_range=(0, 0.9), randomly_negate=True, as_param=shift_enhance_range)
+def contrast(samples, parameter):
+    return fn.contrast(samples, contrast=parameter)
+
+
+@augmentation(mag_range=(0, 0.9), randomly_negate=True, as_param=shift_enhance_range)
+def color(samples, parameter):
+    return fn.saturation(samples, saturation=parameter)
+
+
+def sharpness_kernel(magnitude):
+    # assumes magnitude: [-1, 1]
+    blur = np.array([[1, 1, 1], [1, 5, 1], [1, 1, 1]], dtype=np.float32) / 13
+    ident = np.array([[0, 0, 0], [0, 1, 0], [0, 0, 0]], dtype=np.float32)
+    return -magnitude * blur + (1 + magnitude) * ident
+
+
+@augmentation(mag_range=(0, 0.9), randomly_negate=True, as_param=sharpness_kernel,
+              param_device="gpu")
+def sharpness(samples, kernel):
+    return fn.experimental.filter(samples, kernel)
+
+
+def poster_mask(magnitude):
+    nbits = np.round(magnitude).astype(np.int32)
+    return np.array(255 ^ (2**nbits - 1), dtype=np.uint8)
+
+
+@augmentation(mag_range=(0, 4), as_param=poster_mask, param_device="gpu")
+def posterize(samples, mask):
+    return samples & mask
+
+
+@augmentation(mag_range=(256, 0), param_device="gpu")
+def solarize(samples, threshold):
+    samples_inv = 255 - samples
+    mask_unchanged = samples < threshold
+    mask_inverted = 1 - mask_unchanged
+    return fn.cast_like(mask_unchanged * samples + mask_inverted * samples_inv, samples)
+
+
+@augmentation(mag_range=(0, 110), param_device="gpu")
+def solarize_add(samples, shift, solarize_add_threshold=128):
+    samples_shifted = fn.cast_like(samples + shift, samples)
+    mask_left = samples < solarize_add_threshold
+    mask_right = 1 - mask_left
+    return fn.cast_like(mask_left * samples_shifted + mask_right * samples, samples)
+
+
+@augmentation
+def invert(samples, _):
+    return fn.cast_like(255 - samples, samples)
+
+
+@augmentation
+def equalize(samples, _):
+    return fn.experimental.equalize(samples)
+
+
+@augmentation
+def auto_contrast(samples, _):
+    lo, hi = fn.reductions.min(samples, axes=[-3, -2]), fn.reductions.max(samples, axes=[-3, -2])
+    lo = fn.expand_dims(lo, axes=[0, 1])
+    hi = fn.expand_dims(hi, axes=[0, 1])
+    return fn.cast_like((samples - lo) * (255 / (hi - lo)), samples)
+
+
+@augmentation
+def identity(samples, _):
+    return samples
