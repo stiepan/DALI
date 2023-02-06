@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nvidia.dali.data_node import DataNode as _DataNode
 from nvidia.dali import fn
 from nvidia.dali import types
+from nvidia.dali.data_node import DataNode as _DataNode
 from nvidia.dali.auto_aug import augmentations as aug
-from nvidia.dali.auto_aug.core.graph import operation_idx_random_choice, apply_operators_by_idx, fixed_signed_bin_to_magnitudes
+from nvidia.dali.auto_aug.core.utils import operation_idx_random_choice, apply_operators_by_idx, fixed_signed_bin_to_magnitudes
 
 #todo add shapes to shear?
 #todo describe the shape param that must take just width, height tuple
@@ -58,35 +58,32 @@ rand_augment_suite = ("shear_x", "shear_y", "translate_x", "translate_y", "rotat
 
 
 def rand_augment(samples, n, m, num_magnitude_bins=31, shapes=None, max_translate_width=250,
-                 max_translate_height=250, seed=None, monotonic_mag=True, include_ops=None):
+                 max_translate_height=250, seed=None, monotonic_mag=True, excluded_ops=None):
     ops = dict(**rand_augment_ops)
     extra_op_kwargs = {}
     if shapes is not None:
-        if isinstance(shapes, _DataNode):
+        if not isinstance(shapes, _DataNode):
             raise Exception(
-                f"The `shapes` parameter must be a node of DALI graph (DataNode), got {shapes}.")
-        extra_op_kwargs["shapes"] = extra_op_kwargs
+                f"The `shapes` parameter must be an output of DALI operator (DataNode) that "
+                f"describes height and width of the samples node of DALI graph , got {shapes}.")
+        extra_op_kwargs["shapes"] = shapes
     else:
         ops["translate_x"] = aug.translate_x_no_shape.augmentation((0, max_translate_width))
         ops["translate_y"] = aug.translate_y_no_shape.augmentation((0, max_translate_height))
     if not monotonic_mag:
         ops.update(non_monotonic_ops)
-    if include_ops is None:
-        include_ops = rand_augment_suite
-    else:
-        for name in include_ops:
-            if name not in rand_augment_suite:
-                raise Exception(
-                    f"The `{name}` operator specified in the `include_ops` is not a part of default "
-                    f"RandAugment augmentation suite. Please make sure the name is spelled "
-                    f"correctly. If you would like to use a custom operator in the "
-                    f"please use the `apply_rand_augment` instead of `rand_augment`.")
-    selected_ops = [op for name, op in ops.items() if name in include_ops]
+    excluded_ops = excluded_ops or tuple()
+    selected_ops = [ops[name] for name in rand_augment_suite if name not in excluded_ops]
     return apply_rand_augment(selected_ops, samples, n, m, num_magnitude_bins=num_magnitude_bins,
                               seed=seed, extra_op_kwargs=extra_op_kwargs)
 
 
 def apply_rand_augment(ops, samples, n, m, num_magnitude_bins, seed, extra_op_kwargs=None):
+    if m >= num_magnitude_bins:
+        raise Exception(
+            f"The magnitude `m` must be an integer within `[0, num_magnitude_bins - 1]` range. "
+            f"Got `m={m}`, while the `num_magnitude_bins={num_magnitude_bins}`"
+        )
     if len(ops) == 0:
         return samples
     use_signed_magnitudes = any(op.randomly_negate for op in ops)
@@ -96,9 +93,10 @@ def apply_rand_augment(ops, samples, n, m, num_magnitude_bins, seed, extra_op_kw
         bin_idx = fn.random.uniform(range=[0, 1], dtype=types.INT32, seed=seed,
                                     shape=tuple() if n == 1 else (n, ))
         bins_to_magnitudes_map = fixed_signed_bin_to_magnitudes(m)
+    extra_op_kwargs = extra_op_kwargs or {}
     op_common_kwargs = {
         "num_bins": num_magnitude_bins,
-        "extra_op_kwargs": extra_op_kwargs or {},
+        "extra_op_kwargs": extra_op_kwargs,
         "bins_to_magnitudes_map": bins_to_magnitudes_map,
     }
     op_idx = operation_idx_random_choice(len(ops), n, seed)

@@ -68,7 +68,7 @@ def shear_y(samples, parameter):
 
 @augmentation(mag_range=(0, 0.45), randomly_negate=True, as_param=warp_x_param)
 def translate_x(samples, parameter, shapes):
-    parameter *= shapes
+    parameter *= shapes[1]
     mt = fn.transforms.translation(offset=parameter)
     return fn.warp_affine(samples, matrix=mt, fill_value=0, inverse_map=False)
 
@@ -81,7 +81,7 @@ def translate_x_no_shape(samples, parameter):
 
 @augmentation(mag_range=(0, 0.45), randomly_negate=True, as_param=warp_y_param)
 def translate_y(samples, parameter, shapes):
-    parameter *= shapes
+    parameter *= shapes[0]
     mt = fn.transforms.translation(offset=parameter)
     return fn.warp_affine(samples, matrix=mt, fill_value=0, inverse_map=False)
 
