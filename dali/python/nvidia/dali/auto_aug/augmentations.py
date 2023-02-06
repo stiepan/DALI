@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nvidia.dali import fn
 import numpy as np
 
-from core.wrapper import augmentation
+from nvidia.dali import fn
+from nvidia.dali.auto_aug.core import augmentation
 """
 This module contains a standard suite of augmentations used by AutoAugment policy for ImageNet,
 RandAugment and TrivialAugment. The augmentations are implemented in terms of DALI operators.

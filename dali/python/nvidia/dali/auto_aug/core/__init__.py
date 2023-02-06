@@ -12,4 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from wrapper import augmentation
+from nvidia.dali.auto_aug.core.wrapper import augmentation
+
+__all__ = ("augmentation", )
