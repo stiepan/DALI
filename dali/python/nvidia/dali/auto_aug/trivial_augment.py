@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from core.graph import magnitude_bin, random_operation_idx_choice, apply_selected_operators
+from core.graph import operation_idx_random_choice, apply_operators_by_idx, fixed_signed_bin_to_magnitudes
 
 
 def apply_trivial_augment(ops, samples, num_bins=31, extra_op_kwargs=None):
@@ -28,5 +28,5 @@ def apply_trivial_augment(ops, samples, num_bins=31, extra_op_kwargs=None):
         "num_bins": num_bins,
         "extra_op_kwargs": extra_op_kwargs or {}
     }
-    samples = apply_selected_operators(ops, op_idx, op_kwargs)
+    samples = apply_operators_by_idx(ops, op_idx, op_kwargs)
     return samples

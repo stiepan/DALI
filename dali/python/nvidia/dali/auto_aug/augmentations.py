@@ -68,8 +68,7 @@ def shear_y(samples, parameter):
 
 @augmentation(mag_range=(0, 0.45), randomly_negate=True, as_param=warp_x_param)
 def translate_x(samples, parameter, shapes):
-    max_offset = shapes[-3:-2]
-    parameter *= max_offset
+    parameter *= shapes
     mt = fn.transforms.translation(offset=parameter)
     return fn.warp_affine(samples, matrix=mt, fill_value=0, inverse_map=False)
 
@@ -82,8 +81,7 @@ def translate_x_no_shape(samples, parameter):
 
 @augmentation(mag_range=(0, 0.45), randomly_negate=True, as_param=warp_y_param)
 def translate_y(samples, parameter, shapes):
-    max_offset = shapes[-3:-2]
-    parameter *= max_offset
+    parameter *= shapes
     mt = fn.transforms.translation(offset=parameter)
     return fn.warp_affine(samples, matrix=mt, fill_value=0, inverse_map=False)
 
@@ -129,18 +127,24 @@ def sharpness_kernel(magnitude):
     return -magnitude * blur + (1 + magnitude) * ident
 
 
+def sharpness_kernel_shifted(magnitude):
+    # assumes magnitude: [0, 2]
+    return sharpness_kernel(magnitude - 1)
+
+
 @augmentation(mag_range=(0, 0.9), randomly_negate=True, as_param=sharpness_kernel,
               param_device="gpu")
 def sharpness(samples, kernel):
     return fn.experimental.filter(samples, kernel)
 
 
-def poster_mask(magnitude):
+def poster_mask_uint8(magnitude):
+    # expects [0..8] where 0 yields identity mask and 8 a mask that zeros all bits
     nbits = np.round(magnitude).astype(np.int32)
     return np.array(255 ^ (2**nbits - 1), dtype=np.uint8)
 
 
-@augmentation(mag_range=(0, 4), as_param=poster_mask, param_device="gpu")
+@augmentation(mag_range=(0, 4), as_param=poster_mask_uint8, param_device="gpu")
 def posterize(samples, mask):
     return samples & mask
 

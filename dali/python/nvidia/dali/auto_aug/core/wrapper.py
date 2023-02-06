@@ -83,11 +83,14 @@ class Augmentation:
         aug_params_repr.extend(config_reprs)
         return f"Augmentation({', '.join(aug_params_repr)})"
 
-    def __call__(self, samples, bin_idx, num_bins, mag_to_param_range, extra_op_kwargs=None):
+    def __call__(self, samples, bin_idx, num_bins, bins_to_magnitudes_map=None, extra_op_kwargs=None):
+        magnitudes = self._get_mag_range(num_bins)
+        if bins_to_magnitudes_map is not None:
+            magnitudes = bins_to_magnitudes_map(magnitudes, self)
         if not isinstance(bin_idx, _DataNode):
-            params = self._get_fixed_magnitude(bin_idx, num_bins)
+            params = self._get_fixed_magnitude(magnitudes, bin_idx)
         else:
-            params = self._get_magnitude_data_node(bin_idx, num_bins, mag_to_param_range)
+            params = self._get_magnitude_data_node(magnitudes, bin_idx)
         return self._call_op(samples, params, extra_op_kwargs)
 
     def _get_mag_range(self, num_bins):
@@ -101,16 +104,13 @@ class Augmentation:
             )
         return mag_range
 
-    def _get_fixed_magnitude(self, bin_idx, num_bins):
+    def _get_fixed_magnitude(self, magnitudes, bin_idx):
         assert not isinstance(bin_idx, _DataNode)
-        magnitudes = self._get_mag_range(num_bins)
         param = np.array(self.as_param(magnitudes[bin_idx]))
         return types.Constant(param, device=self.param_device)
 
-    def _get_magnitude_data_node(self, bin_idx, num_bins, mag_to_param_range):
-        magnitudes = self._get_mag_range(num_bins)
-        as_param = self.as_param
-        params = mag_to_param_range(magnitudes, as_param, self.randomly_negate)
+    def _get_magnitude_data_node(self, magnitudes, bin_idx):
+        params = np.array([self.as_param(magnitude) for magnitude in magnitudes])
         params = types.Constant(params, device=self.param_device)
         return params[bin_idx]
 
