@@ -184,10 +184,17 @@ def equalize(samples, _):
 
 @augmentation
 def auto_contrast(samples, _):
+    # assumes HWC layout
     lo, hi = fn.reductions.min(samples, axes=[0, 1]), fn.reductions.max(samples, axes=[0, 1])
-    lo = fn.expand_dims(lo, axes=[0, 1])
-    hi = fn.expand_dims(hi, axes=[0, 1])
-    return fn.cast_like((samples - lo) * (255 / (hi - lo)), samples)
+    diff = hi - lo
+    mask_scale = diff > 0
+    mask_id = 1 - mask_scale
+    # choose div so that scale ends up being 255 / (hi - lo) if hi > 0 and 1 otherwise
+    div_by = diff * mask_scale + 255 * mask_id
+    scale = 255 / div_by
+    lo_scale = scale * mask_scale
+    scaled = samples * scale - lo * lo_scale
+    return fn.cast_like(scaled, samples)
 
 
 @augmentation
