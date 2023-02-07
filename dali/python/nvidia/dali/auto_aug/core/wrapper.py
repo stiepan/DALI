@@ -29,13 +29,18 @@ def _np_wrap(mag):
     return np.array(mag)
 
 
+class _DummyParam:
+    """Use DummyParam as a kwarg default when it matters to distinguish between `kwarg=None`
+    and not specifying the kwarg"""
+
+
 class Augmentation:
 
-    def __init__(self, op, mag_range=None, as_param=None, randomly_negate=None, param_device=None):
+    def __init__(self, op, mag_range=None, randomly_negate=None, as_param=None, param_device=None):
         self._op = op
         self._mag_range = mag_range
-        self._as_param = as_param
         self._randomly_negate = randomly_negate
+        self._as_param = as_param
         self._param_device = param_device
 
     @property
@@ -54,8 +59,8 @@ class Augmentation:
     def param_device(self):
         return self._param_device or "cpu"
 
-    def augmentation(self, mag_range=None, as_param=None, randomly_negate=None, param_device=None,
-                     augmentation_cls=None):
+    def augmentation(self, mag_range=_DummyParam, randomly_negate=_DummyParam, as_param=_DummyParam,
+                     param_device=_DummyParam, augmentation_cls=None):
         cls = augmentation_cls or self.__class__
         config = {name: value for name, value in self._get_config()}
         for name, value in (
@@ -64,7 +69,7 @@ class Augmentation:
             ('randomly_negate', randomly_negate),
             ('param_device', param_device),
         ):
-            if value is not None:
+            if value is not _DummyParam:
                 config[name] = value
         return cls(self._op, **config)
 
@@ -83,7 +88,8 @@ class Augmentation:
         aug_params_repr.extend(config_reprs)
         return f"Augmentation({', '.join(aug_params_repr)})"
 
-    def __call__(self, samples, bin_idx, num_bins, bins_to_magnitudes_map=None, extra_op_kwargs=None):
+    def __call__(self, samples, bin_idx, num_bins, bins_to_magnitudes_map=None,
+                 extra_op_kwargs=None):
         magnitudes = self._get_mag_range(num_bins)
         if bins_to_magnitudes_map is not None:
             magnitudes = bins_to_magnitudes_map(magnitudes, self)
@@ -121,15 +127,18 @@ class Augmentation:
         return self._op(samples, params, **kwargs)
 
 
-def augmentation(function=None, mag_range=None, as_param=None, randomly_negate=None, param_device=None,
-                 augmentation_cls=None):
+def augmentation(function=None, *, mag_range=None, randomly_negate=None, as_param=None,
+                 param_device=None, augmentation_cls=None):
 
     def decorator(function):
         cls = augmentation_cls or Augmentation
-        return cls(function, mag_range=mag_range, as_param=as_param, randomly_negate=randomly_negate,
-                   param_device=param_device)
+        return cls(function, mag_range=mag_range, as_param=as_param,
+                   randomly_negate=randomly_negate, param_device=param_device)
 
     if function is None:
         return decorator
     else:
+        if not callable(function):
+            raise Exception(f"The `@augmentation` decorator was used to decorate the object that "
+                            f"is not callable: {function}.")
         return decorator(function)

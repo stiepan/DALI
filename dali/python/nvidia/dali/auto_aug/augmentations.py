@@ -55,46 +55,52 @@ def warp_y_param(magnitude):
 
 
 @augmentation(mag_range=(0, 0.3), randomly_negate=True, as_param=warp_x_param)
-def shear_x(samples, parameter):
+def shear_x(samples, parameter, warp_fill_value=None, interp_type=None):
     mt = fn.transforms.shear(shear=parameter)
-    return fn.warp_affine(samples, matrix=mt, fill_value=0, inverse_map=False)
+    return fn.warp_affine(samples, matrix=mt, fill_value=warp_fill_value, interp_type=interp_type,
+                          inverse_map=False)
 
 
 @augmentation(mag_range=(0, 0.3), randomly_negate=True, as_param=warp_y_param)
-def shear_y(samples, parameter):
+def shear_y(samples, parameter, warp_fill_value=None, interp_type=None):
     mt = fn.transforms.shear(shear=parameter)
-    return fn.warp_affine(samples, matrix=mt, fill_value=0, inverse_map=False)
+    return fn.warp_affine(samples, matrix=mt, fill_value=warp_fill_value, interp_type=interp_type,
+                          inverse_map=False)
 
 
 @augmentation(mag_range=(0, 0.45), randomly_negate=True, as_param=warp_x_param)
-def translate_x(samples, parameter, shapes):
+def translate_x(samples, parameter, shapes, warp_fill_value=None, interp_type=None):
     parameter *= shapes[1]
     mt = fn.transforms.translation(offset=parameter)
-    return fn.warp_affine(samples, matrix=mt, fill_value=0, inverse_map=False)
+    return fn.warp_affine(samples, matrix=mt, fill_value=warp_fill_value, interp_type=interp_type,
+                          inverse_map=False)
 
 
 @augmentation(mag_range=(0, 250), randomly_negate=True, as_param=warp_x_param)
-def translate_x_no_shape(samples, parameter):
+def translate_x_no_shape(samples, parameter, warp_fill_value=None, interp_type=None):
     mt = fn.transforms.translation(offset=parameter)
-    return fn.warp_affine(samples, matrix=mt, fill_value=0, inverse_map=False)
+    return fn.warp_affine(samples, matrix=mt, fill_value=warp_fill_value, interp_type=interp_type,
+                          inverse_map=False)
 
 
 @augmentation(mag_range=(0, 0.45), randomly_negate=True, as_param=warp_y_param)
-def translate_y(samples, parameter, shapes):
+def translate_y(samples, parameter, shapes, warp_fill_value=None, interp_type=None):
     parameter *= shapes[0]
     mt = fn.transforms.translation(offset=parameter)
-    return fn.warp_affine(samples, matrix=mt, fill_value=0, inverse_map=False)
+    return fn.warp_affine(samples, matrix=mt, fill_value=warp_fill_value, interp_type=interp_type,
+                          inverse_map=False)
 
 
 @augmentation(mag_range=(0, 250), randomly_negate=True, as_param=warp_y_param)
-def translate_y_no_shape(samples, parameter):
+def translate_y_no_shape(samples, parameter, warp_fill_value=None, interp_type=None):
     mt = fn.transforms.translation(offset=parameter)
-    return fn.warp_affine(samples, matrix=mt, fill_value=0, inverse_map=False)
+    return fn.warp_affine(samples, matrix=mt, fill_value=warp_fill_value, interp_type=interp_type,
+                          inverse_map=False)
 
 
 @augmentation(mag_range=(0, 30), randomly_negate=True)
-def rotate(samples, parameter):
-    return fn.rotate(samples, angle=parameter, fill_value=0)
+def rotate(samples, parameter, warp_fill_value=None, interp_type=None):
+    return fn.rotate(samples, angle=parameter, fill_value=warp_fill_value, interp_type=interp_type)
 
 
 def shift_enhance_range(magnitude):
