@@ -27,7 +27,7 @@ trivial_augment_wide_ops = {
     "contrast": a.contrast.augmentation((0.01, 1), True, a.shift_enhance_range),
     "color": a.color.augmentation((0.01, 1), True, a.shift_enhance_range),
     "sharpness": a.sharpness.augmentation((0.01, 1), True, a.sharpness_kernel),
-    "posterize": a.posterize.augmentation((8, 2), as_param=a.poster_mask_uint8),
+    "posterize": a.posterize.augmentation((8, 2), False, a.poster_mask_uint8),
     "solarize": a.solarize.augmentation((256, 0)),
     "equalize": a.equalize,
     "auto_contrast": a.auto_contrast,
@@ -44,6 +44,11 @@ def trivial_augment_wide(samples, num_magnitude_bins=31, fill_value=None, interp
     ops = dict(**trivial_augment_wide_ops)
     extra_op_kwargs = {"fill_value": fill_value, "interp_type": interp_type}
     excluded_ops = excluded_ops or tuple()
+    for name in excluded_ops:
+        if name not in trivial_augment_wide_suite:
+            raise Exception(
+                f"The `{name}` was specified in `excluded_ops`, but the trivial_augment_wide "
+                f"suite does not contain such an augmentation.")
     selected_ops = [ops[name] for name in trivial_augment_wide_suite if name not in excluded_ops]
     return apply_trivial_augment(selected_ops, samples, num_magnitude_bins=num_magnitude_bins,
                                  seed=seed, extra_op_kwargs=extra_op_kwargs)

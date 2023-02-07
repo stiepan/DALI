@@ -38,18 +38,13 @@ rand_augment_ops = {
     "identity": a.identity,
 }
 
-# There are two flavours of RandAugment available in different frameworks, one that
-# makes sure that strength of each operation corresponds to increasing magnitudes
-# and one that uses magnitudes similar to the ones from AutoAugment. In the latter variant,
-# the posterize and solarize strength decreases, while the "enhance" operators strength
-# decreases the closer the magnitude is to the center of the range.
 non_monotonic_ops = {
-    "posterize": a.posterize.augmentation((1, 4), False, as_param=a.poster_mask_uint8),
-    "solarize": a.solarize.augmentation((0, 256), False, as_param=None),
-    "brightness": a.brightness.augmentation((0.1, 1.9), False, as_param=None),
-    "contrast": a.contrast.augmentation((0.1, 1.9), False, as_param=None),
-    "color": a.color.augmentation((0.1, 1.9), False, as_param=None),
-    "sharpness": a.sharpness.augmentation((0.1, 1.9), False, as_param=a.sharpness_kernel_shifted),
+    "posterize": a.posterize.augmentation((1, 4), False, a.poster_mask_uint8),
+    "solarize": a.solarize.augmentation((0, 256), False, None),
+    "brightness": a.brightness.augmentation((0.1, 1.9), False, None),
+    "contrast": a.contrast.augmentation((0.1, 1.9), False, None),
+    "color": a.color.augmentation((0.1, 1.9), False, None),
+    "sharpness": a.sharpness.augmentation((0.1, 1.9), False, a.sharpness_kernel_shifted),
 }
 
 rand_augment_suite = ("shear_x", "shear_y", "translate_x", "translate_y", "rotate", "brightness",
@@ -67,7 +62,7 @@ def rand_augment(samples, n, m, num_magnitude_bins=31, shapes=None, fill_value=N
     ---------
     samples : DataNode
         A batch of samples to be processed. The samples should be images of `HWC` layout
-        and `uint8` type.
+        and `uint8` type and reside on GPU.
     n: int
         The number of randomly sampled operations to be applied to a sample.
     m: int
@@ -95,7 +90,7 @@ def rand_augment(samples, n, m, num_magnitude_bins=31, shapes=None, fill_value=N
         There, the `posterize` and `solarize` strength decreases with increasing magnitudes and
         enhance operations (`brightness`, `contrast`, `color`, `sharpness`) use (0.1, 1.9) range,
         which means that the strength decreases the closer the magnitudes are to the center
-        of the range.
+        of the range. The affected ops are listed in `non_monotonic_ops`.
     excluded_ops: List[str], optional
         A list of names of the operations to be excluded from the `rand_augment_suite`.
         If, instead of just limiting the set of operations, you need to include some custom
@@ -121,6 +116,11 @@ def rand_augment(samples, n, m, num_magnitude_bins=31, shapes=None, fill_value=N
     if not monotonic_mag:
         ops.update(non_monotonic_ops)
     excluded_ops = excluded_ops or tuple()
+    for name in excluded_ops:
+        if name not in rand_augment_suite:
+            raise Exception(
+                f"The `{name}` was specified in `excluded_ops`, but the rand_augment suite "
+                f"does not contain such an augmentation.")
     selected_ops = [ops[name] for name in rand_augment_suite if name not in excluded_ops]
     return apply_rand_augment(selected_ops, samples, n, m, num_magnitude_bins=num_magnitude_bins,
                               seed=seed, extra_op_kwargs=extra_op_kwargs)
@@ -136,7 +136,7 @@ def apply_rand_augment(ops, samples, n, m, num_magnitude_bins, seed, extra_op_kw
     ops : List[core.Augmentation]
         List of augmentations to be sampled and applied in RandAugment fashion.
     samples : DataNode
-        A batch of samples to be processed. The samples should be images of `HWC` layout.
+        A batch of samples to be processed.
     n: int
         The number of randomly sampled operations to be applied to a sample.
     m: int

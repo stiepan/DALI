@@ -61,6 +61,11 @@ class Augmentation:
 
     def augmentation(self, mag_range=_DummyParam, randomly_negate=_DummyParam, as_param=_DummyParam,
                      param_device=_DummyParam, augmentation_cls=None):
+        """
+        The method to override augmentation parameters specified with `@augmentation` decorator.
+        Returns a new augmentation with the original operation decorated but updated parameters.
+        Parameters that are not specified are inherited from the initial augmentation.
+        """
         cls = augmentation_cls or self.__class__
         config = {name: value for name, value in self._get_config()}
         for name, value in (
@@ -91,6 +96,9 @@ class Augmentation:
     def __call__(self, samples, bin_idx, num_bins, bins_to_magnitudes_map=None,
                  extra_op_kwargs=None):
         magnitudes = self._get_mag_range(num_bins)
+        # by default the number of bins matches the number of magnitudes and the i-th bin
+        # is mapped into the i-th magnitude, but if the bins space is different, it can
+        # be adjusted with the callback
         if bins_to_magnitudes_map is not None:
             magnitudes = bins_to_magnitudes_map(magnitudes, self)
         if not isinstance(bin_idx, _DataNode):
@@ -141,10 +149,10 @@ def augmentation(function=None, *, mag_range=None, randomly_negate=None, as_para
         If true, the magnitude from the mag_range will be randomly negated for every sample.
     as_param: callable
         A callback that transforms the magnitude into a parameter that will be passed to the decorated
-        operation instead of the plain magnitude. This way, the parameters for possible magnitudes
-        can be computed once.
+        operation instead of the plain magnitude. This, the parameters for the range of magnitudes
+        can be computed once in advance and stored as a Constant node.
     param_device: str
-        A "cpu" or "gpu", describes where to store the precomputed paramters.
+        A "cpu" or "gpu", describes where to store the precomputed parameters.
 
     Returns
     -------

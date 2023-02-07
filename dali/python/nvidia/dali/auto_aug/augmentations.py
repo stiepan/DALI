@@ -18,7 +18,7 @@ from nvidia.dali import fn
 from nvidia.dali.auto_aug.core import augmentation
 """
 This module contains a standard suite of augmentations used by AutoAugment policy for ImageNet,
-RandAugment and TrivialAugment. The augmentations are implemented in terms of DALI operators.
+RandAugment and TrivialAugmentWide. The augmentations are implemented in terms of DALI operators.
 The automatic augmentation schemes parametrize the operations with a magnitude, which,
 intuitively, states how strong the given operation should be.
 
