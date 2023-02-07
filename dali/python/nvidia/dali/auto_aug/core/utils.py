@@ -58,26 +58,6 @@ def fixed_signed_bin_to_magnitudes(fixed_bin_idx):
     return inner
 
 
-# def magnitude_bin(num_bins, use_signed_magnitudes, fixed_bin=None, num_levels=1):
-#     assert not isinstance(fixed_bin, _DataNode)
-#     shape = tuple() if num_levels == 1 else (num_levels, )
-#     if fixed_bin is not None:
-#         if not use_signed_magnitudes:
-#             return fixed_bin, None
-#         else:
-#             bin_idx = fn.random.uniform(range=[0, 1], dtype=types.INT32, shape=shape)
-#             return bin_idx, map_fixed_signed_bin(fixed_bin)
-#     else:
-#         if not use_signed_magnitudes:
-#             bin_idx = fn.random.uniform(range=[0, num_bins - 1], dtype=types.INT32, shape=shape)
-#             return bin_idx, map_random_unsigned_bin
-#         else:
-#             num_rand_bins = 2 * num_bins
-#             bin_idx = fn.random.uniform(range=[0, num_rand_bins - 1], dtype=types.INT32,
-#                                         shape=shape)
-#             return bin_idx, map_random_signed_bin
-
-
 def split_samples_between_ops(op_range_lo, op_range_hi, ops, selected_op_idx, op_kwargs):
     assert op_range_lo <= op_range_hi
     if op_range_lo == op_range_hi:

@@ -70,7 +70,7 @@ def shear_y(samples, parameter, warp_fill_value=None, interp_type=None):
 
 @augmentation(mag_range=(0, 0.45), randomly_negate=True, as_param=warp_x_param)
 def translate_x(samples, parameter, shapes, warp_fill_value=None, interp_type=None):
-    parameter *= shapes[1]
+    parameter *= shapes[-2]
     mt = fn.transforms.translation(offset=parameter)
     return fn.warp_affine(samples, matrix=mt, fill_value=warp_fill_value, interp_type=interp_type,
                           inverse_map=False)
@@ -85,7 +85,7 @@ def translate_x_no_shape(samples, parameter, warp_fill_value=None, interp_type=N
 
 @augmentation(mag_range=(0, 0.45), randomly_negate=True, as_param=warp_y_param)
 def translate_y(samples, parameter, shapes, warp_fill_value=None, interp_type=None):
-    parameter *= shapes[0]
+    parameter *= shapes[-3]
     mt = fn.transforms.translation(offset=parameter)
     return fn.warp_affine(samples, matrix=mt, fill_value=warp_fill_value, interp_type=interp_type,
                           inverse_map=False)
@@ -145,9 +145,10 @@ def sharpness(samples, kernel):
 
 
 def poster_mask_uint8(magnitude):
-    # expects [0..8] where 0 yields identity mask and 8 a mask that zeros all bits
-    nbits = np.round(magnitude).astype(np.int32)
-    return np.array(255 ^ (2**nbits - 1), dtype=np.uint8)
+    # expects [0..8] where 8 yields identity mask and 0 a mask that zeros all bits
+    nbits = 8 - np.round(magnitude).astype(np.uint32)
+    bits_to_remove = np.uint8(2) ** nbits - 1
+    return np.array(np.uint8(255) ^ bits_to_remove, dtype=np.uint8)
 
 
 @augmentation(mag_range=(0, 4), as_param=poster_mask_uint8, param_device="gpu")
@@ -183,7 +184,7 @@ def equalize(samples, _):
 
 @augmentation
 def auto_contrast(samples, _):
-    lo, hi = fn.reductions.min(samples, axes=[-3, -2]), fn.reductions.max(samples, axes=[-3, -2])
+    lo, hi = fn.reductions.min(samples, axes=[0, 1]), fn.reductions.max(samples, axes=[0, 1])
     lo = fn.expand_dims(lo, axes=[0, 1])
     hi = fn.expand_dims(hi, axes=[0, 1])
     return fn.cast_like((samples - lo) * (255 / (hi - lo)), samples)

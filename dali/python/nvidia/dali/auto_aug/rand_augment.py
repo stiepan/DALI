@@ -28,7 +28,7 @@ rand_augment_ops = {
     "contrast": a.contrast.augmentation((0, 0.9), True, a.shift_enhance_range),
     "color": a.color.augmentation((0, 0.9), True, a.shift_enhance_range),
     "sharpness": a.sharpness.augmentation((0, 0.9), True, a.sharpness_kernel),
-    "posterize": a.posterize.augmentation((0, 7), False, a.poster_mask_uint8),
+    "posterize": a.posterize.augmentation((8, 4), False, a.poster_mask_uint8),
     # solarization strength increases with decreasing magnitude (threshold)
     "solarize": a.solarize.augmentation((256, 0)),
     "solarize_add": a.solarize_add.augmentation((0, 110)),
@@ -44,7 +44,7 @@ rand_augment_ops = {
 # the posterize and solarize strength decreases, while the "enhance" operators strength
 # decreases the closer the magnitude is to the center of the range.
 non_monotonic_ops = {
-    "posterize": a.posterize.augmentation((7, 0), False, as_param=a.poster_mask_uint8),
+    "posterize": a.posterize.augmentation((1, 4), False, as_param=a.poster_mask_uint8),
     "solarize": a.solarize.augmentation((0, 256), False, as_param=None),
     "brightness": a.brightness.augmentation((0.1, 1.9), False, as_param=None),
     "contrast": a.contrast.augmentation((0.1, 1.9), False, as_param=None),
@@ -66,7 +66,8 @@ def rand_augment(samples, n, m, num_magnitude_bins=31, shapes=None, fill_value=N
     Parameter
     ---------
     samples : DataNode
-        A batch of samples to be processed. The samples should be images of `HWC` layout.
+        A batch of samples to be processed. The samples should be images of `HWC` layout
+        and `uint8` type.
     n: int
         The number of randomly sampled operations to be applied to a sample.
     m: int
