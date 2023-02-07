@@ -107,7 +107,7 @@ def shift_enhance_range(magnitude):
     """The `enhance` operations (brightness, contrast, color, sharpness) accept magnitudes
     from [0, 2] range. However, the neutral magnitude is not 0 but 1 and the intuitive strength
     of the operation increases the further the magnitude is from 1. So, we specify magnitudes range
-    to be in [0, 1] range, expect it to be randomly negate it and then shift it by 1"""
+    to be in [0, 1] range, expect it to be randomly negated and then shift it by 1"""
     return 1 + magnitude
 
 

@@ -58,8 +58,54 @@ rand_augment_suite = ("shear_x", "shear_y", "translate_x", "translate_y", "rotat
 
 
 def rand_augment(samples, n, m, num_magnitude_bins=31, shapes=None, fill_value=None,
-                 interp_type=None, max_translate_width=250, max_translate_height=250, seed=None,
+                 interp_type=None, max_translate_height=250, max_translate_width=250, seed=None,
                  monotonic_mag=True, excluded_ops=None):
+    """
+    Applies RandAugment (https://arxiv.org/abs/1909.13719) transformations to the provided batch of samples.
+
+    Parameter
+    ---------
+    samples : DataNode
+        A batch of samples to be processed. The samples should be images of `HWC` layout.
+    n: int
+        The number of randomly sampled operations to be applied to a sample.
+    m: int
+        A magnitude (strength) of each operation to be applied, it must be an integer
+        within `[0, num_magnitude_bins - 1]`.
+    shapes: DataNode
+        A batch of shapes of the `samples`. If specified, the `translation` operations
+        are applied relative to the shape of the sample. Otherwise `max_translate_width`
+        and `max_translate_height` constants are used to compute the magnitude of the
+        translation.
+    fill_value: int, optional
+        A value to be used as a padding for images transformed with warp_affine ops
+        (translation, shear and rotate). If `None` is specified, the images are padded
+        with the border value repeated (clamped).
+    interp_type: types.DALIInterpType
+        Interpolation method used by the warp_affine ops (translation, shear and rotate).
+        Supported values are `types.INTERP_LINEAR` (default) and `types.INTERP_NN`.
+    seed: int
+        Seed to be used to randomly sample operations (and to negate magnitudes).
+    monotonic_mag: bool
+        There are two flavours of RandAugment available in different frameworks. For the default
+        `monotonic_mag=True` the strengths of operations that accept magnitude increases with
+        the increasing magnitudes. If set to False, a different variant is used where some color
+        manipulating operations use magnitude ranges that correspond to initial AutoAugment paper.
+        There, the `posterize` and `solarize` strength decreases with increasing magnitudes and
+        enhance operations (`brightness`, `contrast`, `color`, `sharpness`) use (0.1, 1.9) range,
+        which means that the strength decreases the closer the magnitudes are to the center
+        of the range.
+    excluded_ops: List[str], optional
+        A list of names of the operations to be excluded from the `rand_augment_suite`.
+        If, instead of just limiting the set of operations, you need to include some custom
+        operations or fine-tuned of the existing ones, you can use the `apply_rand_augment`
+        directly, which accepts a list of augmentations.
+
+    Returns
+    -------
+    DataNode
+        A batch of transformed samples.
+    """
     ops = dict(**rand_augment_ops)
     extra_op_kwargs = {"fill_value": fill_value, "interp_type": interp_type}
     if shapes is not None:
@@ -80,10 +126,40 @@ def rand_augment(samples, n, m, num_magnitude_bins=31, shapes=None, fill_value=N
 
 
 def apply_rand_augment(ops, samples, n, m, num_magnitude_bins, seed, extra_op_kwargs=None):
+    """
+    Applies RandAugment (https://arxiv.org/abs/1909.13719) like transformations but with custom
+    set of augmentations.
+
+    Parameter
+    ---------
+    ops : List[core.Augmentation]
+        List of augmentations to be sampled and applied in RandAugment fashion.
+    samples : DataNode
+        A batch of samples to be processed. The samples should be images of `HWC` layout.
+    n: int
+        The number of randomly sampled operations to be applied to a sample.
+    m: int
+        A magnitude (strength) of each operation to be applied, it must be an integer
+        within `[0, num_magnitude_bins - 1]`.
+    seed: int
+        Seed to be used to randomly sample operations (and to negate magnitudes).
+    extra_op_kwargs:
+        A dictionary of extra parameters (for example DataNodes) to be passed to the
+        augmentations specified through `ops`. The signature of the augmentations are
+        checked for any extra arguments and if the name of the argument matches one from the
+        `extra_op_kwargs`, the value is passed as an argument.
+    Returns
+    -------
+    DataNode
+        A batch of transformed samples.
+    """
+    if num_magnitude_bins <= 1:
+        raise Exception(
+            f"The number of magnitude bins cannot be less than 1, got {num_magnitude_bins}.")
     if m >= num_magnitude_bins:
         raise Exception(
             f"The magnitude `m` must be an integer within `[0, num_magnitude_bins - 1]` range. "
-            f"Got `m={m}`, while the `num_magnitude_bins={num_magnitude_bins}`")
+            f"Got `m={m}`, while the `num_magnitude_bins={num_magnitude_bins}`.")
     if len(ops) == 0:
         return samples
     use_signed_magnitudes = any(op.randomly_negate for op in ops)

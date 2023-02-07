@@ -122,13 +122,36 @@ class Augmentation:
 
     def _call_op(self, samples, params, extra_op_kwargs):
         extra_op_kwargs = extra_op_kwargs or {}
-        fun_args = inspect.getfullargspec(self._op).args
+        fun_args = inspect.getfullargspec(self._op).args[2:]
         kwargs = {name: param for name, param in extra_op_kwargs.items() if name in fun_args}
         return self._op(samples, params, **kwargs)
 
 
 def augmentation(function=None, *, mag_range=None, randomly_negate=None, as_param=None,
                  param_device=None, augmentation_cls=None):
+    """
+    A decorator turning DALI operation into an augmentation that can be used with the
+    `auto_aug` transformations such as RandAugment.
+
+    Parameter
+    ---------
+    mag_range : (int, int)
+        Specifies the range of applicable magnitudes for the operation.
+    randomly_negate: bool
+        If true, the magnitude from the mag_range will be randomly negated for every sample.
+    as_param: callable
+        A callback that transforms the magnitude into a parameter that will be passed to the decorated
+        operation instead of the plain magnitude. This way, the parameters for possible magnitudes
+        can be computed once.
+    param_device: str
+        A "cpu" or "gpu", describes where to store the precomputed paramters.
+
+    Returns
+    -------
+    Augmentation
+        The operation wrapped with the Augmentation class so that it can be used with the `auto_aug`
+        transforms.
+    """
 
     def decorator(function):
         cls = augmentation_cls or Augmentation
