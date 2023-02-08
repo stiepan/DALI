@@ -14,6 +14,7 @@
 
 import inspect
 
+from nvidia.dali import fn
 from nvidia.dali import types
 from nvidia.dali.data_node import DataNode as _DataNode
 
@@ -93,21 +94,12 @@ class Augmentation:
         aug_params_repr.extend(config_reprs)
         return f"Augmentation({', '.join(aug_params_repr)})"
 
-    def __call__(self, samples, bin_idx, num_bins, bins_to_magnitudes_map=None,
-                 extra_op_kwargs=None):
-        magnitudes = self._get_mag_range(num_bins)
-        # by default the number of bins matches the number of magnitudes and the i-th bin
-        # is mapped into the i-th magnitude, but if the bins space is different, it can
-        # be adjusted with the callback
-        if bins_to_magnitudes_map is not None:
-            magnitudes = bins_to_magnitudes_map(magnitudes, self)
-        if not isinstance(bin_idx, _DataNode):
-            params = self._get_fixed_magnitude(magnitudes, bin_idx)
-        else:
-            params = self._get_magnitude_data_node(magnitudes, bin_idx)
-        return self._call_op(samples, params, extra_op_kwargs)
+    def __call__(self, samples, params, **kwargs):
+        fun_args = inspect.getfullargspec(self._op).args[2:]
+        op_kwargs = {name: param for name, param in kwargs.items() if name in fun_args}
+        return self._op(samples, params, **op_kwargs)
 
-    def _get_mag_range(self, num_bins):
+    def get_mag_range(self, num_bins):
         mag_range = self.mag_range
         if isinstance(mag_range, tuple) and len(mag_range) == 2:
             lo, hi = mag_range
@@ -117,22 +109,6 @@ class Augmentation:
                 f"Got `mag_range` of length {len(mag_range)} while the `num_bins` specified is {num_bins}."
             )
         return mag_range
-
-    def _get_fixed_magnitude(self, magnitudes, bin_idx):
-        assert not isinstance(bin_idx, _DataNode)
-        param = np.array(self.as_param(magnitudes[bin_idx]))
-        return types.Constant(param, device=self.param_device)
-
-    def _get_magnitude_data_node(self, magnitudes, bin_idx):
-        params = np.array([self.as_param(magnitude) for magnitude in magnitudes])
-        params = types.Constant(params, device=self.param_device)
-        return params[bin_idx]
-
-    def _call_op(self, samples, params, extra_op_kwargs):
-        extra_op_kwargs = extra_op_kwargs or {}
-        fun_args = inspect.getfullargspec(self._op).args[2:]
-        kwargs = {name: param for name, param in extra_op_kwargs.items() if name in fun_args}
-        return self._op(samples, params, **kwargs)
 
 
 def augmentation(function=None, *, mag_range=None, randomly_negate=None, as_param=None,
@@ -173,3 +149,111 @@ def augmentation(function=None, *, mag_range=None, randomly_negate=None, as_para
             raise Exception(f"The `@augmentation` decorator was used to decorate the object that "
                             f"is not callable: {function}.")
         return decorator(function)
+
+
+class ParametrizedAugmentation:
+    """
+    Wraps augmentation instance and concrete magnitude to automatically provide
+    the augmentation with parameter when called with samples.
+    """
+
+    def __init__(self, augmentation: Augmentation, num_magnitude_bins: int, bin_idx):
+        if num_magnitude_bins < 1:
+            raise Exception(f"The `num_magnitude_bins` must be a positive integer. "
+                            f"Got {num_magnitude_bins}.")
+        if not isinstance(bin_idx, _DataNode) and not 0 <= bin_idx < num_magnitude_bins:
+            raise Exception(f"Expected the magnitude bin from range `[0, num_magnitude_bins - 1]`."
+                            f"Got the magnitude bin index {bin_idx}, but the "
+                            f"`num_magnitude_bins` is {num_magnitude_bins}.")
+        self.augmentation = augmentation
+        self.num_magnitude_bins = num_magnitude_bins
+        self.bin_idx = bin_idx
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.augmentation}, {self.num_magnitude_bins}, {self.bin_idx})"
+
+    def __call__(self, samples, **kwargs):
+        param = self.get_param()
+        return self.augmentation(samples, param, **kwargs)
+
+    def get_param(self):
+        raise NotImplementedError
+
+
+class ConstMagnitudeAug(ParametrizedAugmentation):
+
+    def get_param(self):
+        as_param = self.augmentation.as_param
+        magnitudes = self.augmentation.get_mag_range(self.num_magnitude_bins)
+        magnitude = magnitudes[self.bin_idx]
+        param = np.array(as_param(magnitude))
+        return types.Constant(param, device=self.augmentation.param_device)
+
+
+class ConstSignedMagnitudeAug(ParametrizedAugmentation):
+
+    @classmethod
+    def get_bins(cls, num_levels: int, seed: int):
+        return fn.random.uniform(range=[0, 1], dtype=types.INT32, seed=seed,
+                                 shape=tuple() if num_levels == 1 else (num_levels, ))
+
+    def __init__(self, augmentation: Augmentation, num_magnitude_bins: int, bin_idx: _DataNode,
+                 fixed_magnitude_bin: int):
+        super().__init__(augmentation, num_magnitude_bins, bin_idx)
+        self.fixed_magnitude_bin = fixed_magnitude_bin
+        if not 0 <= fixed_magnitude_bin < self.num_magnitude_bins:
+            raise Exception(f"Expected the magnitude bin from range `[0, num_magnitude_bins - 1]`."
+                            f"Got the magnitude bin index {fixed_magnitude_bin}, but the "
+                            f"`num_magnitude_bins` is {self.num_magnitude_bins}.")
+
+    def get_param(self):
+        as_param = self.augmentation.as_param
+        magnitudes = self.augmentation.get_mag_range(self.num_magnitude_bins)
+        magnitudes = [magnitudes[self.fixed_magnitude_bin]]
+        magnitudes = remap_bins_to_signed_magnitudes(magnitudes, self.augmentation.randomly_negate)
+        params = np.array([as_param(magnitude) for magnitude in magnitudes])
+        params = types.Constant(params, device=self.augmentation.param_device)
+        return params[self.bin_idx]
+
+
+class RandomMagnitudeAug(ParametrizedAugmentation):
+
+    @classmethod
+    def get_bins(cls, num_magnitude_bins: int, num_levels: int, seed: int):
+        return fn.random.uniform(range=[0, num_magnitude_bins - 1], dtype=types.INT32, seed=seed,
+                                 shape=tuple() if num_levels == 1 else (num_levels, ))
+
+    def get_param(self):
+        as_param = self.augmentation.as_param
+        magnitudes = self.augmentation.get_mag_range(self.num_magnitude_bins)
+        params = np.array([as_param(magnitude) for magnitude in magnitudes])
+        params = types.Constant(params, device=self.augmentation.param_device)
+        return params[self.bin_idx]
+
+
+class RandomSignedMagnitudeAug(ParametrizedAugmentation):
+
+    @classmethod
+    def get_bins(cls, num_magnitude_bins: int, num_levels: int, seed: int):
+        num_bins = 2 * num_magnitude_bins  # encode the sign in parity
+        return fn.random.uniform(range=[0, num_bins - 1], dtype=types.INT32, seed=seed,
+                                 shape=tuple() if num_levels == 1 else (num_levels, ))
+
+    def get_param(self):
+        as_param = self.augmentation.as_param
+        magnitudes = self.augmentation.get_mag_range(self.num_magnitude_bins)
+        magnitudes = remap_bins_to_signed_magnitudes(magnitudes, self.augmentation.randomly_negate)
+        params = np.array([as_param(magnitude) for magnitude in magnitudes])
+        params = types.Constant(params, device=self.augmentation.param_device)
+        return params[self.bin_idx]
+
+
+def remap_bins_to_signed_magnitudes(magnitudes, randomly_negate):
+
+    def remap_bin_idx(bin_idx):
+        magnitude = magnitudes[bin_idx // 2]
+        if randomly_negate and bin_idx % 2:
+            magnitude = -magnitude
+        return magnitude
+
+    return np.array([remap_bin_idx(bin_idx) for bin_idx in range(2 * len(magnitudes))])

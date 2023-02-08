@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import MappingProxyType
+
 from nvidia.dali import fn
 from nvidia.dali import types
 from nvidia.dali.auto_aug import augmentations as a
-from nvidia.dali.auto_aug.core.utils import operation_idx_random_choice, apply_selected_ops, random_bins_to_signed_magnitudes
+from nvidia.dali.auto_aug.core.utils import operation_idx_random_choice, apply_selected_ops
+from nvidia.dali.auto_aug.core.wrapper import ConstMagnitudeAug, ConstSignedMagnitudeAug
 
 
 class Policy:
@@ -23,15 +26,16 @@ class Policy:
     def __init__(self, name, num_bins, augmentations, sub_policies):
         self.name = name
         self.num_bins = num_bins
-        self.augmentations = augmentations
-        self.sub_policies = sub_policies
+        # prevent accidental modifications
+        self.augmentations = MappingProxyType(augmentations)
+        self.sub_policies = tuple(sub_policies)
 
     def __repr__(self):
         return f"Policy({self.name}, {self.num_bins}, {self.augmentations}, {self.sub_policies})"
 
 
 auto_augment_image_net_policy = Policy(
-    "ImageNet", 10, {
+    "ImageNet", 11, {
         "shear_x": a.shear_x.augmentation((0, 0.3), True),
         "shear_y": a.shear_y.augmentation((0, 0.3), True),
         "translate_x": a.translate_x.augmentation((0, 0.45), True),
@@ -76,9 +80,49 @@ auto_augment_image_net_policy = Policy(
     ])
 
 
-def apply_auto_augment(policy, samples, shapes=None, fill_value=None, interp_type=None, seed=None):
-    pass
+def auto_augment_image_net(samples, shapes=None, fill_value=0, interp_type=None,
+                           max_translate_height=250, max_translate_width=250, seed=None):
+    augment_kwargs = {"fill_value": fill_value, "interp_type": interp_type}
+    name = auto_augment_image_net_policy.name
+    num_bins = auto_augment_image_net_policy.num_bins
+    augments = dict(auto_augment_image_net_policy.augmentations)
+    sub_policies = auto_augment_image_net_policy.sub_policies
+    if shapes is not None:
+        augments["translate_x"] = a.translate_x_no_shape.augmentation((0, max_translate_width))
+        augments["translate_y"] = a.translate_y_no_shape.augmentation((0, max_translate_height))
+        augment_kwargs["shapes"] = shapes
+    policy = Policy(name, num_bins, augments, sub_policies)
+    return apply_auto_augment(policy, samples, seed, augment_kwargs)
 
 
-def run_sub_policy():
-    pass
+def apply_auto_augment(policy: Policy, samples, seed=None, augment_kwargs=None):
+    if len(policy.sub_policies) == 0:
+        return samples
+    augmentations = policy.augmentations
+    use_signed_magnitudes = any(aug.randomly_negate for aug in augmentations.values())
+    sub_policies = [[(augmentations[name], p, mag) for name, p, mag in sub_policy]
+                    for sub_policy in policy.sub_policies]
+    if not use_signed_magnitudes:
+        sub_policies = [[(ConstMagnitudeAug(aug, policy.num_bins, mag), p)
+                         for aug, p, mag in sub_policy] for sub_policy in sub_policies]
+    else:
+        bin_idx = ConstSignedMagnitudeAug.get_bins(1, seed)
+        sub_policies = [[(ConstSignedMagnitudeAug(aug, policy.num_bins, bin_idx, mag), p)
+                         for aug, p, mag in sub_policy] for sub_policy in sub_policies]
+    max_policy_len = max(len(sub_policy) for sub_policy in sub_policies)
+    rand_res = fn.random.uniform(shape=(max_policy_len, ))
+    op_kwargs = dict(samples=samples, rand_res=rand_res, **augment_kwargs)
+    sub_policies = [apply_sub_policy(sub_policy) for sub_policy in sub_policies]
+    policy_id = operation_idx_random_choice(len(sub_policies), 1, seed)
+    return apply_selected_ops(sub_policies, policy_id, op_kwargs)
+
+
+def apply_sub_policy(sub_policy):
+
+    def inner(samples, rand_res, **kwargs):
+        for i, (augmentation, p) in enumerate(sub_policy):
+            if rand_res[i] <= p:
+                samples = augmentation(samples, **kwargs)
+        return samples
+
+    return inner

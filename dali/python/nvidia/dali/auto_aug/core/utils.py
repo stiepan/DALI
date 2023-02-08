@@ -32,43 +32,16 @@ def operation_idx_random_choice(num_total_ops, num_levels=1, rng_seed=42):
     return fn.external_source(source=random_choice, batch=False)
 
 
-def split_samples_between_ops(op_range_lo, op_range_hi, ops, selected_op_idx, op_kwargs):
+def split_samples_among_ops(op_range_lo, op_range_hi, ops, selected_op_idx, op_kwargs):
     assert op_range_lo <= op_range_hi
     if op_range_lo == op_range_hi:
         return ops[op_range_lo](**op_kwargs)
     mid = (op_range_lo + op_range_hi) // 2
     if selected_op_idx <= mid:
-        return split_samples_between_ops(op_range_lo, mid, ops, selected_op_idx, op_kwargs)
+        return split_samples_among_ops(op_range_lo, mid, ops, selected_op_idx, op_kwargs)
     else:
-        return split_samples_between_ops(mid + 1, op_range_hi, ops, selected_op_idx, op_kwargs)
+        return split_samples_among_ops(mid + 1, op_range_hi, ops, selected_op_idx, op_kwargs)
 
 
 def apply_selected_ops(ops, selected_op_idx, op_kwargs):
-    return split_samples_between_ops(0, len(ops) - 1, ops, selected_op_idx, op_kwargs)
-
-
-def get_signed_magnitude(magnitudes, randomly_negate, bin_idx):
-    magnitude = magnitudes[bin_idx // 2]
-    if randomly_negate and bin_idx % 2:
-        magnitude = -magnitude
-    return np.array(magnitude, dtype=magnitudes.dtype)
-
-
-def random_bins_to_signed_magnitudes(magnitudes, augmentation):
-    randomly_negate = augmentation.randomly_negate
-    return np.array([
-        get_signed_magnitude(magnitudes, randomly_negate, bin_idx)
-        for bin_idx in range(len(magnitudes) * 2)
-    ])
-
-
-def fixed_signed_bin_to_magnitudes(fixed_bin_idx):
-
-    def inner(magnitudes, augmentation):
-        randomly_negate = augmentation.randomly_negate
-        magnitudes = magnitudes[fixed_bin_idx:fixed_bin_idx + 2]
-        return np.array(
-            [get_signed_magnitude(magnitudes, randomly_negate, bin_idx) for bin_idx in range(2)])
-
-    return inner
-
+    return split_samples_among_ops(0, len(ops) - 1, ops, selected_op_idx, op_kwargs)

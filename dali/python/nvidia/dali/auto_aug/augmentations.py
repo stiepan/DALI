@@ -55,52 +55,52 @@ def warp_y_param(magnitude):
 
 
 @augmentation(mag_range=(0, 0.3), randomly_negate=True, as_param=warp_x_param)
-def shear_x(samples, parameter, warp_fill_value=None, interp_type=None):
+def shear_x(samples, parameter, fill_value=None, interp_type=None):
     mt = fn.transforms.shear(shear=parameter)
-    return fn.warp_affine(samples, matrix=mt, fill_value=warp_fill_value, interp_type=interp_type,
+    return fn.warp_affine(samples, matrix=mt, fill_value=fill_value, interp_type=interp_type,
                           inverse_map=False)
 
 
 @augmentation(mag_range=(0, 0.3), randomly_negate=True, as_param=warp_y_param)
-def shear_y(samples, parameter, warp_fill_value=None, interp_type=None):
+def shear_y(samples, parameter, fill_value=None, interp_type=None):
     mt = fn.transforms.shear(shear=parameter)
-    return fn.warp_affine(samples, matrix=mt, fill_value=warp_fill_value, interp_type=interp_type,
+    return fn.warp_affine(samples, matrix=mt, fill_value=fill_value, interp_type=interp_type,
                           inverse_map=False)
 
 
 @augmentation(mag_range=(0, 0.45), randomly_negate=True, as_param=warp_x_param)
-def translate_x(samples, parameter, shapes, warp_fill_value=None, interp_type=None):
+def translate_x(samples, parameter, shapes, fill_value=None, interp_type=None):
     parameter *= shapes[-2]
     mt = fn.transforms.translation(offset=parameter)
-    return fn.warp_affine(samples, matrix=mt, fill_value=warp_fill_value, interp_type=interp_type,
+    return fn.warp_affine(samples, matrix=mt, fill_value=fill_value, interp_type=interp_type,
                           inverse_map=False)
 
 
 @augmentation(mag_range=(0, 250), randomly_negate=True, as_param=warp_x_param)
-def translate_x_no_shape(samples, parameter, warp_fill_value=None, interp_type=None):
+def translate_x_no_shape(samples, parameter, fill_value=None, interp_type=None):
     mt = fn.transforms.translation(offset=parameter)
-    return fn.warp_affine(samples, matrix=mt, fill_value=warp_fill_value, interp_type=interp_type,
+    return fn.warp_affine(samples, matrix=mt, fill_value=fill_value, interp_type=interp_type,
                           inverse_map=False)
 
 
 @augmentation(mag_range=(0, 0.45), randomly_negate=True, as_param=warp_y_param)
-def translate_y(samples, parameter, shapes, warp_fill_value=None, interp_type=None):
+def translate_y(samples, parameter, shapes, fill_value=None, interp_type=None):
     parameter *= shapes[-3]
     mt = fn.transforms.translation(offset=parameter)
-    return fn.warp_affine(samples, matrix=mt, fill_value=warp_fill_value, interp_type=interp_type,
+    return fn.warp_affine(samples, matrix=mt, fill_value=fill_value, interp_type=interp_type,
                           inverse_map=False)
 
 
 @augmentation(mag_range=(0, 250), randomly_negate=True, as_param=warp_y_param)
-def translate_y_no_shape(samples, parameter, warp_fill_value=None, interp_type=None):
+def translate_y_no_shape(samples, parameter, fill_value=None, interp_type=None):
     mt = fn.transforms.translation(offset=parameter)
-    return fn.warp_affine(samples, matrix=mt, fill_value=warp_fill_value, interp_type=interp_type,
+    return fn.warp_affine(samples, matrix=mt, fill_value=fill_value, interp_type=interp_type,
                           inverse_map=False)
 
 
 @augmentation(mag_range=(0, 30), randomly_negate=True)
-def rotate(samples, parameter, warp_fill_value=None, interp_type=None):
-    return fn.rotate(samples, angle=parameter, fill_value=warp_fill_value, interp_type=interp_type)
+def rotate(samples, parameter, fill_value=None, interp_type=None):
+    return fn.rotate(samples, angle=parameter, fill_value=fill_value, interp_type=interp_type)
 
 
 def shift_enhance_range(magnitude):
@@ -152,7 +152,7 @@ def poster_mask_uint8(magnitude):
     if magnitude > 8:
         magnitude = 8
     nbits = np.round(8 - magnitude).astype(np.uint32)
-    removal_mask = np.uint8(2) ** nbits - 1
+    removal_mask = np.uint8(2)**nbits - 1
     return np.array(np.uint8(255) ^ removal_mask, dtype=np.uint8)
 
 
@@ -172,9 +172,9 @@ def solarize(samples, threshold):
 @augmentation(mag_range=(0, 110), param_device="gpu")
 def solarize_add(samples, shift, solarize_add_threshold=128):
     samples_shifted = fn.cast_like(samples + shift, samples)
-    mask_left = samples < solarize_add_threshold
-    mask_right = 1 - mask_left
-    return fn.cast_like(mask_left * samples_shifted + mask_right * samples, samples)
+    mask_shifted = samples < solarize_add_threshold
+    mask_id = 1 - mask_shifted
+    return fn.cast_like(mask_shifted * samples_shifted + mask_id * samples, samples)
 
 
 @augmentation

@@ -15,9 +15,10 @@
 from nvidia.dali import fn
 from nvidia.dali import types
 from nvidia.dali.auto_aug import augmentations as a
-from nvidia.dali.auto_aug.core.utils import operation_idx_random_choice, apply_selected_ops, random_bins_to_signed_magnitudes
+from nvidia.dali.auto_aug.core.utils import operation_idx_random_choice, apply_selected_ops
+from nvidia.dali.auto_aug.core.wrapper import RandomMagnitudeAug, RandomSignedMagnitudeAug
 
-trivial_augment_wide_ops = {
+trivial_augment_wide_suite = {
     "shear_x": a.shear_x.augmentation((0, 0.99), True),
     "shear_y": a.shear_y.augmentation((0, 0.99), True),
     "translate_x": a.translate_x_no_shape.augmentation((0, 32), True),
@@ -34,13 +35,9 @@ trivial_augment_wide_ops = {
     "identity": a.identity,
 }
 
-trivial_augment_wide_suite = ("shear_x", "shear_y", "translate_x", "translate_y", "rotate",
-                              "brightness", "contrast", "color", "sharpness", "posterize",
-                              "solarize", "equalize", "auto_contrast", "identity")
 
-
-def trivial_augment_wide(samples, num_magnitude_bins=31, fill_value=None, interp_type=None,
-                         seed=None, excluded_ops=None):
+def trivial_augment_wide(samples, num_magnitude_bins=31, fill_value=0, interp_type=None,
+                         seed=None, excluded=None):
     """
     Applies TrivialAugment Wide (https://arxiv.org/abs/2103.10158) augmentation scheme to the
     provided batch of samples.
@@ -61,43 +58,44 @@ def trivial_augment_wide(samples, num_magnitude_bins=31, fill_value=None, interp
         Supported values are `types.INTERP_LINEAR` (default) and `types.INTERP_NN`.
     seed: int, optional
         Seed to be used to randomly sample operations (and to negate magnitudes).
-    excluded_ops: List[str], optional
-        A list of names of the operations to be excluded from the `rand_augment_suite`.
+    excluded: List[str], optional
+        A list of names of the operations to be excluded from the default suite of augmentations.
         If, instead of just limiting the set of operations, you need to include some custom
-        operations or fine-tuned of the existing ones, you can use the `apply_rand_augment`
+        operations or fine-tuned of the existing ones, you can use the `apply_trivial_augment`
         directly, which accepts a list of augmentations.
-    extra_op_kwargs:
-        A dictionary of extra parameters (for example DataNodes) to be passed to the
-        augmentations specified through `ops`. The signature of the augmentations are
-        checked for any extra arguments and if the name of the argument matches one from the
-        `extra_op_kwargs`, the value is passed as an argument.
+    augment_kwargs:
+        A dictionary of extra parameters to be passed when calling `augmentations`.
+        The signature of each augmentation is checked for any extra arguments and if
+        the name of the argument matches one from the `augment_kwargs`, the value is
+        passed as an argument. For example, some augmentations from the default
+        random augment suite accept `shapes`, `fill_value` and `interp_type`.
 
     Returns
     -------
     DataNode
         A batch of transformed samples.
     """
-    ops = dict(**trivial_augment_wide_ops)
-    extra_op_kwargs = {"fill_value": fill_value, "interp_type": interp_type}
-    excluded_ops = excluded_ops or tuple()
-    for name in excluded_ops:
-        if name not in trivial_augment_wide_suite:
+    augments = dict(**trivial_augment_wide_suite)
+    augment_kwargs = {"fill_value": fill_value, "interp_type": interp_type}
+    excluded = excluded or tuple()
+    for name in excluded:
+        if name not in augments:
             raise Exception(
-                f"The `{name}` was specified in `excluded_ops`, but the trivial_augment_wide "
-                f"suite does not contain such an augmentation.")
-    selected_ops = [ops[name] for name in trivial_augment_wide_suite if name not in excluded_ops]
-    return apply_trivial_augment(selected_ops, samples, num_magnitude_bins=num_magnitude_bins,
-                                 seed=seed, extra_op_kwargs=extra_op_kwargs)
+                f"The `{name}` was specified in `excluded`, but the trivial_augment_wide_suite "
+                f"does not contain such an augmentation.")
+    selected_augments = [augment for name, augment in augments.items() if name not in excluded]
+    return apply_trivial_augment(selected_augments, samples, num_magnitude_bins=num_magnitude_bins,
+                                 seed=seed, augment_kwargs=augment_kwargs)
 
 
-def apply_trivial_augment(ops, samples, num_magnitude_bins, seed, extra_op_kwargs=None):
+def apply_trivial_augment(augmentations, samples, num_magnitude_bins, seed, augment_kwargs=None):
     """
     Applies TrivialAugment Wide (https://arxiv.org/abs/2103.10158) augmentation scheme to the
     provided batch of samples but with a custom set of augmentations.
 
     Parameter
     ---------
-    ops : List[core.Augmentation]
+    augmentations : List[core.Augmentation]
         List of augmentations to be sampled and applied in TrivialAugment fashion.
     samples : DataNode
         A batch of samples to be processed. The samples should be images of `HWC` layout,
@@ -106,7 +104,7 @@ def apply_trivial_augment(ops, samples, num_magnitude_bins, seed, extra_op_kwarg
         The number of bins to divide the magnitude ranges into.
     seed: int, optional
         Seed to be used to randomly sample operations (and to negate magnitudes).
-    excluded_ops: List[str], optional
+    excluded: List[str], optional
         A list of names of the operations to be excluded from the `rand_augment_suite`.
         If, instead of just limiting the set of operations, you need to include some custom
         operations or fine-tuned of the existing ones, you can use the `apply_rand_augment`
@@ -120,21 +118,15 @@ def apply_trivial_augment(ops, samples, num_magnitude_bins, seed, extra_op_kwarg
     if num_magnitude_bins <= 1:
         raise Exception(
             f"The number of magnitude bins cannot be less than 1, got {num_magnitude_bins}.")
-    if len(ops) == 0:
+    if len(augmentations) == 0:
         return samples
-    use_signed_magnitudes = any(op.randomly_negate for op in ops)
+    use_signed_magnitudes = any(aug.randomly_negate for aug in augmentations)
     if not use_signed_magnitudes:
-        bin_idx = fn.random.uniform(range=[0, num_magnitude_bins - 1], dtype=types.INT32, seed=seed)
-        bins_to_magnitudes_map = None
+        bin_idx = RandomMagnitudeAug.get_bins(num_magnitude_bins, 1, seed)
+        ops = [RandomMagnitudeAug(aug, num_magnitude_bins, bin_idx) for aug in augmentations]
     else:
-        num_rand_bins = 2 * num_magnitude_bins
-        bin_idx = fn.random.uniform(range=[0, num_rand_bins - 1], dtype=types.INT32, seed=seed)
-        bins_to_magnitudes_map = random_bins_to_signed_magnitudes
-    op_common_kwargs = {
-        "num_bins": num_magnitude_bins,
-        "extra_op_kwargs": extra_op_kwargs or {},
-        "bins_to_magnitudes_map": bins_to_magnitudes_map,
-    }
-    op_idx = operation_idx_random_choice(len(ops), 1, seed)
-    op_kwargs = dict(samples=samples, bin_idx=bin_idx, **op_common_kwargs)
+        bin_idx = RandomSignedMagnitudeAug.get_bins(num_magnitude_bins, 1, seed)
+        ops = [RandomSignedMagnitudeAug(aug, num_magnitude_bins, bin_idx) for aug in augmentations]
+    op_kwargs = dict(samples=samples, **augment_kwargs)
+    op_idx = operation_idx_random_choice(len(augmentations), 1, seed)
     return apply_selected_ops(ops, op_idx, op_kwargs)
