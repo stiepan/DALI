@@ -145,10 +145,15 @@ def sharpness(samples, kernel):
 
 
 def poster_mask_uint8(magnitude):
-    # expects [0..8] where 8 yields identity mask and 0 a mask that zeros all bits
-    nbits = 8 - np.round(magnitude).astype(np.uint32)
-    bits_to_remove = np.uint8(2) ** nbits - 1
-    return np.array(np.uint8(255) ^ bits_to_remove, dtype=np.uint8)
+    # expects [0..8] where 8 yields identity mask and a 0
+    # would be a mask that zeros all bits
+    if magnitude <= 0:
+        magnitude = 1
+    if magnitude > 8:
+        magnitude = 8
+    nbits = np.round(8 - magnitude).astype(np.uint32)
+    removal_mask = np.uint8(2) ** nbits - 1
+    return np.array(np.uint8(255) ^ removal_mask, dtype=np.uint8)
 
 
 @augmentation(mag_range=(0, 4), as_param=poster_mask_uint8, param_device="gpu")

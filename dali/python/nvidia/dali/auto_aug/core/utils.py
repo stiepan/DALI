@@ -32,6 +32,21 @@ def operation_idx_random_choice(num_total_ops, num_levels=1, rng_seed=42):
     return fn.external_source(source=random_choice, batch=False)
 
 
+def split_samples_between_ops(op_range_lo, op_range_hi, ops, selected_op_idx, op_kwargs):
+    assert op_range_lo <= op_range_hi
+    if op_range_lo == op_range_hi:
+        return ops[op_range_lo](**op_kwargs)
+    mid = (op_range_lo + op_range_hi) // 2
+    if selected_op_idx <= mid:
+        return split_samples_between_ops(op_range_lo, mid, ops, selected_op_idx, op_kwargs)
+    else:
+        return split_samples_between_ops(mid + 1, op_range_hi, ops, selected_op_idx, op_kwargs)
+
+
+def apply_selected_ops(ops, selected_op_idx, op_kwargs):
+    return split_samples_between_ops(0, len(ops) - 1, ops, selected_op_idx, op_kwargs)
+
+
 def get_signed_magnitude(magnitudes, randomly_negate, bin_idx):
     magnitude = magnitudes[bin_idx // 2]
     if randomly_negate and bin_idx % 2:
@@ -57,17 +72,3 @@ def fixed_signed_bin_to_magnitudes(fixed_bin_idx):
 
     return inner
 
-
-def split_samples_between_ops(op_range_lo, op_range_hi, ops, selected_op_idx, op_kwargs):
-    assert op_range_lo <= op_range_hi
-    if op_range_lo == op_range_hi:
-        return ops[op_range_lo](**op_kwargs)
-    mid = (op_range_lo + op_range_hi) // 2
-    if selected_op_idx <= mid:
-        return split_samples_between_ops(op_range_lo, mid, ops, selected_op_idx, op_kwargs)
-    else:
-        return split_samples_between_ops(mid + 1, op_range_hi, ops, selected_op_idx, op_kwargs)
-
-
-def apply_operators_by_idx(ops, selected_op_idx, op_kwargs):
-    return split_samples_between_ops(0, len(ops) - 1, ops, selected_op_idx, op_kwargs)

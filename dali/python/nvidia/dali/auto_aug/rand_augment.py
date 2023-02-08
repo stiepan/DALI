@@ -16,7 +16,7 @@ from nvidia.dali import fn
 from nvidia.dali import types
 from nvidia.dali.data_node import DataNode as _DataNode
 from nvidia.dali.auto_aug import augmentations as a
-from nvidia.dali.auto_aug.core.utils import operation_idx_random_choice, apply_operators_by_idx, fixed_signed_bin_to_magnitudes
+from nvidia.dali.auto_aug.core.utils import operation_idx_random_choice, apply_selected_ops, fixed_signed_bin_to_magnitudes
 
 rand_augment_ops = {
     "shear_x": a.shear_x.augmentation((0, 0.3), True),
@@ -39,7 +39,7 @@ rand_augment_ops = {
 }
 
 non_monotonic_ops = {
-    "posterize": a.posterize.augmentation((1, 4), False, a.poster_mask_uint8),
+    "posterize": a.posterize.augmentation((0, 4), False, a.poster_mask_uint8),
     "solarize": a.solarize.augmentation((0, 256), False, None),
     "brightness": a.brightness.augmentation((0.1, 1.9), False, None),
     "contrast": a.contrast.augmentation((0.1, 1.9), False, None),
@@ -56,19 +56,22 @@ def rand_augment(samples, n, m, num_magnitude_bins=31, shapes=None, fill_value=N
                  interp_type=None, max_translate_height=250, max_translate_width=250, seed=None,
                  monotonic_mag=True, excluded_ops=None):
     """
-    Applies RandAugment (https://arxiv.org/abs/1909.13719) transformations to the provided batch of samples.
+    Applies RandAugment (https://arxiv.org/abs/1909.13719) augmentation scheme to the
+    provided batch of samples.
 
     Parameter
     ---------
     samples : DataNode
-        A batch of samples to be processed. The samples should be images of `HWC` layout
-        and `uint8` type and reside on GPU.
+        A batch of samples to be processed. The samples should be images of `HWC` layout,
+        `uint8` type and reside on GPU.
     n: int
         The number of randomly sampled operations to be applied to a sample.
     m: int
         A magnitude (strength) of each operation to be applied, it must be an integer
         within `[0, num_magnitude_bins - 1]`.
-    shapes: DataNode
+    num_magnitude_bins: int, optional
+        The number of bins to divide the magnitude ranges into.
+    shapes: DataNode, optional
         A batch of shapes of the `samples`. If specified, the `translation` operations
         are applied relative to the shape of the sample. Otherwise `max_translate_width`
         and `max_translate_height` constants are used to compute the magnitude of the
@@ -77,16 +80,15 @@ def rand_augment(samples, n, m, num_magnitude_bins=31, shapes=None, fill_value=N
         A value to be used as a padding for images transformed with warp_affine ops
         (translation, shear and rotate). If `None` is specified, the images are padded
         with the border value repeated (clamped).
-    interp_type: types.DALIInterpType
+    interp_type: types.DALIInterpType, optional
         Interpolation method used by the warp_affine ops (translation, shear and rotate).
         Supported values are `types.INTERP_LINEAR` (default) and `types.INTERP_NN`.
-    seed: int
+    seed: int, optional
         Seed to be used to randomly sample operations (and to negate magnitudes).
-    monotonic_mag: bool
+    monotonic_mag: bool, optional
         There are two flavours of RandAugment available in different frameworks. For the default
-        `monotonic_mag=True` the strengths of operations that accept magnitude increases with
-        the increasing magnitudes. If set to False, a different variant is used where some color
-        manipulating operations use magnitude ranges that correspond to initial AutoAugment paper.
+        `monotonic_mag=True` the strength of operations that accept magnitude increases with
+        the increasing magnitudes. If set to False, magnitudes for some color operations differ.
         There, the `posterize` and `solarize` strength decreases with increasing magnitudes and
         enhance operations (`brightness`, `contrast`, `color`, `sharpness`) use (0.1, 1.9) range,
         which means that the strength decreases the closer the magnitudes are to the center
@@ -142,6 +144,8 @@ def apply_rand_augment(ops, samples, n, m, num_magnitude_bins, seed, extra_op_kw
     m: int
         A magnitude (strength) of each operation to be applied, it must be an integer
         within `[0, num_magnitude_bins - 1]`.
+    num_magnitude_bins: int
+        The number of bins to divide the magnitude ranges into.
     seed: int
         Seed to be used to randomly sample operations (and to negate magnitudes).
     extra_op_kwargs:
@@ -180,5 +184,5 @@ def apply_rand_augment(ops, samples, n, m, num_magnitude_bins, seed, extra_op_kw
         level_bin_idx = bin_idx if not use_signed_magnitudes or n == 1 else bin_idx[level_idx]
         op_kwargs = dict(samples=samples, bin_idx=level_bin_idx, **op_common_kwargs)
         level_op_idx = op_idx if n == 1 else op_idx[level_idx]
-        samples = apply_operators_by_idx(ops, level_op_idx, op_kwargs)
+        samples = apply_selected_ops(ops, level_op_idx, op_kwargs)
     return samples
