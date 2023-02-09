@@ -16,7 +16,6 @@ from nvidia.dali import fn
 from nvidia.dali import types
 from nvidia.dali.auto_aug import augmentations as a
 from nvidia.dali.auto_aug.core.utils import operation_idx_random_choice, apply_selected_ops
-from nvidia.dali.auto_aug.core.wrapper import RandomMagnitudeAug, RandomSignedMagnitudeAug
 
 trivial_augment_wide_suite = {
     "shear_x": a.shear_x.augmentation((0, 0.99), True),
@@ -24,10 +23,10 @@ trivial_augment_wide_suite = {
     "translate_x": a.translate_x_no_shape.augmentation((0, 32), True),
     "translate_y": a.translate_y_no_shape.augmentation((0, 32), True),
     "rotate": a.rotate.augmentation((0, 135), True),
-    "brightness": a.brightness.augmentation((0.01, 1), True, a.shift_enhance_range),
-    "contrast": a.contrast.augmentation((0.01, 1), True, a.shift_enhance_range),
-    "color": a.color.augmentation((0.01, 1), True, a.shift_enhance_range),
-    "sharpness": a.sharpness.augmentation((0.01, 1), True, a.sharpness_kernel),
+    "brightness": a.brightness.augmentation((0.01, 0.99), True, a.shift_enhance_range),
+    "contrast": a.contrast.augmentation((0.01, 0.99), True, a.shift_enhance_range),
+    "color": a.color.augmentation((0.01, 0.99), True, a.shift_enhance_range),
+    "sharpness": a.sharpness.augmentation((0.01, 0.99), True, a.sharpness_kernel),
     "posterize": a.posterize.augmentation((8, 2), False, a.poster_mask_uint8),
     "solarize": a.solarize.augmentation((256, 0)),
     "equalize": a.equalize,
@@ -36,8 +35,8 @@ trivial_augment_wide_suite = {
 }
 
 
-def trivial_augment_wide(samples, num_magnitude_bins=31, fill_value=0, interp_type=None,
-                         seed=None, excluded=None):
+def trivial_augment_wide(samples, num_magnitude_bins=31, fill_value=0, interp_type=None, seed=None,
+                         excluded=None):
     """
     Applies TrivialAugment Wide (https://arxiv.org/abs/2103.10158) augmentation scheme to the
     provided batch of samples.
@@ -120,13 +119,15 @@ def apply_trivial_augment(augmentations, samples, num_magnitude_bins, seed, augm
             f"The number of magnitude bins cannot be less than 1, got {num_magnitude_bins}.")
     if len(augmentations) == 0:
         return samples
+    magnitude_bin_idx = fn.random.uniform(range=[0, num_magnitude_bins - 1], dtype=types.INT32,
+                                          seed=seed)
     use_signed_magnitudes = any(aug.randomly_negate for aug in augmentations)
     if not use_signed_magnitudes:
-        bin_idx = RandomMagnitudeAug.get_bins(num_magnitude_bins, 1, seed)
-        ops = [RandomMagnitudeAug(aug, num_magnitude_bins, bin_idx) for aug in augmentations]
+        random_sign = None
     else:
-        bin_idx = RandomSignedMagnitudeAug.get_bins(num_magnitude_bins, 1, seed)
-        ops = [RandomSignedMagnitudeAug(aug, num_magnitude_bins, bin_idx) for aug in augmentations]
-    op_kwargs = dict(samples=samples, **augment_kwargs)
+        random_sign = fn.random.uniform(range=[0, 1], dtype=types.INT32, seed=seed)
+    op_kwargs = dict(samples=samples, magnitude_bin_idx=magnitude_bin_idx,
+                     num_magnitude_bins=num_magnitude_bins, random_sign=random_sign,
+                     **augment_kwargs)
     op_idx = operation_idx_random_choice(len(augmentations), 1, seed)
-    return apply_selected_ops(ops, op_idx, op_kwargs)
+    return apply_selected_ops(augmentations, op_idx, op_kwargs)

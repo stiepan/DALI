@@ -147,9 +147,10 @@ def sharpness(samples, kernel):
 def poster_mask_uint8(magnitude):
     # expects [0..8] where 8 yields identity mask and a 0
     # would be a mask that zeros all bits
+    magnitude = np.round(magnitude).astype(np.uint32)
     if magnitude <= 0:
         magnitude = 1
-    if magnitude > 8:
+    elif magnitude > 8:
         magnitude = 8
     nbits = np.round(8 - magnitude).astype(np.uint32)
     removal_mask = np.uint8(2)**nbits - 1

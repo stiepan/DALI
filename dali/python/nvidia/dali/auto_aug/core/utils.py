@@ -22,6 +22,17 @@ except ImportError:
         "Please install numpy to use the examples.")
 
 
+def remap_bins_to_signed_magnitudes(magnitudes, randomly_negate):
+
+    def remap_bin_idx(bin_idx):
+        magnitude = magnitudes[bin_idx // 2]
+        if randomly_negate and bin_idx % 2:
+            magnitude = -magnitude
+        return magnitude
+
+    return np.array([remap_bin_idx(bin_idx) for bin_idx in range(2 * len(magnitudes))])
+
+
 def operation_idx_random_choice(num_total_ops, num_levels=1, rng_seed=42):
     shape = tuple() if num_levels == 1 else (num_levels, )
     rng = np.random.default_rng(rng_seed)

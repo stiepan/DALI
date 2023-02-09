@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nvidia.dali.data_node import DataNode as _DataNode
+from nvidia.dali import fn
+from nvidia.dali import types
 from nvidia.dali.auto_aug import augmentations as a
 from nvidia.dali.auto_aug.core.utils import operation_idx_random_choice, apply_selected_ops
-from nvidia.dali.auto_aug.core.wrapper import ConstMagnitudeAug, ConstSignedMagnitudeAug
 
 rand_augment_suite = {
     "shear_x": a.shear_x.augmentation((0, 0.3), True),
@@ -45,9 +45,9 @@ non_monotonic_augs = {
 }
 
 
-def rand_augment(samples, n, m, num_magnitude_bins=31, shapes=None, fill_value=0,
-                 interp_type=None, max_translate_height=250, max_translate_width=250, seed=None,
-                 monotonic_mag=True, excluded=None):
+def rand_augment(samples, n, m, num_magnitude_bins=31, shapes=None, fill_value=0, interp_type=None,
+                 max_translate_height=250, max_translate_width=250, seed=None, monotonic_mag=True,
+                 excluded=None):
     """
     Applies RandAugment (https://arxiv.org/abs/1909.13719) augmentation scheme to the
     provided batch of samples.
@@ -117,8 +117,7 @@ def rand_augment(samples, n, m, num_magnitude_bins=31, shapes=None, fill_value=0
                               augment_kwargs=augment_kwargs)
 
 
-def apply_rand_augment(augmentations, samples, n, m, num_magnitude_bins, seed,
-                       augment_kwargs=None):
+def apply_rand_augment(augmentations, samples, n, m, num_magnitude_bins, seed, augment_kwargs=None):
     """
     Applies RandAugment (https://arxiv.org/abs/1909.13719) like transformations but with custom
     set of augmentations.
@@ -152,25 +151,21 @@ def apply_rand_augment(augmentations, samples, n, m, num_magnitude_bins, seed,
     if len(augmentations) == 0:
         return samples
     augment_kwargs = augment_kwargs or {}
-    op_idx = operation_idx_random_choice(len(augmentations), n, seed)
     use_signed_magnitudes = any(aug.randomly_negate for aug in augmentations)
     if not use_signed_magnitudes:
-        # the magnitudes are truly fixed and don't depend on any runtime params
-        ops = [ConstMagnitudeAug(aug, num_magnitude_bins, m) for aug in augmentations]
-        for level_idx in range(n):
-            level_op_idx = op_idx if n == 1 else op_idx[level_idx]
-            op_kwargs = dict(samples=samples, **augment_kwargs)
-            samples = apply_selected_ops(ops, level_op_idx, op_kwargs)
+        random_sign = None
     else:
-        # the magnitudes are randomly negated, so we need to randomly sample the signs
-        bin_idx = ConstSignedMagnitudeAug.get_bins(n, seed)
-        for level_idx in range(n):
-            level_op_idx = op_idx if n == 1 else op_idx[level_idx]
-            level_bin_idx = bin_idx if n == 1 else bin_idx[level_idx]
-            level_ops = [
-                ConstSignedMagnitudeAug(aug, num_magnitude_bins, level_bin_idx, m)
-                for aug in augmentations
-            ]
-            op_kwargs = dict(samples=samples, **augment_kwargs)
-            samples = apply_selected_ops(level_ops, level_op_idx, op_kwargs)
+        random_sign = fn.random.uniform(range=[0, 1], dtype=types.INT32, seed=seed,
+                                        shape=tuple() if n == 1 else (n, ))
+    op_idx = operation_idx_random_choice(len(augmentations), n, seed)
+    for level_idx in range(n):
+        if not use_signed_magnitudes or n == 1:
+            level_random_sign = random_sign
+        else:
+            level_random_sign = random_sign[level_idx]
+        op_kwargs = dict(samples=samples, magnitude_bin_idx=m,
+                         num_magnitude_bins=num_magnitude_bins, random_sign=level_random_sign,
+                         **augment_kwargs)
+        level_op_idx = op_idx if n == 1 else op_idx[level_idx]
+        samples = apply_selected_ops(augmentations, level_op_idx, op_kwargs)
     return samples
