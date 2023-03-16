@@ -56,7 +56,7 @@ def training_pipe(data_dir, interpolation, image_size, output_layout, automatic_
     # evaluated exactly once during build - we either include automatic augmentations or not.
     if automatic_augmentation == "autoaugment":
         shapes = fn.peek_image_shape(jpegs)
-        output = auto_augment.auto_augment_image_net(images, shapes)
+        output = auto_augment.auto_augment_image_net(images, shapes, fill_value=None)
     elif automatic_augmentation == "trivialaugment":
         output = trivial_augment.trivial_augment_wide(images)
     else:
