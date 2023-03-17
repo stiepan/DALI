@@ -40,8 +40,8 @@ def training_pipe(data_dir, interpolation, image_size, output_layout, automatic_
     images = fn.decoders.image_random_crop(jpegs, device=decoder_device, output_type=types.RGB,
                                            device_memory_padding=211025920,
                                            host_memory_padding=140544512,
-                                           random_aspect_ratio=[0.75, 4.0 / 3.0],
-                                           random_area=[0.08, 1.0])
+                                           random_aspect_ratio=[0.75,
+                                                                4.0 / 3.0], random_area=[0.08, 1.0])
 
     images = fn.resize(images, device=resize_device, size=[image_size, image_size],
                        interp_type=interpolation, antialias=False)
@@ -55,8 +55,7 @@ def training_pipe(data_dir, interpolation, image_size, output_layout, automatic_
     # of Pipeline definition, this `if` statement relies on static scalar parameter, so it is
     # evaluated exactly once during build - we either include automatic augmentations or not.
     if automatic_augmentation == "autoaugment":
-        output = auto_augment.auto_augment_image_net(images, [image_size, image_size],
-                                                     fill_value=None)
+        output = auto_augment.auto_augment_image_net(images, [image_size, image_size])
     elif automatic_augmentation == "trivialaugment":
         output = trivial_augment.trivial_augment_wide(images)
     else:
