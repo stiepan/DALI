@@ -57,9 +57,9 @@ def training_pipe(data_dir, interpolation, image_size, output_layout, automatic_
     # We pass the shape of the image after the resize so the translate operations are done
     # relative to the image size.
     if automatic_augmentation == "autoaugment":
-        output = auto_augment.auto_augment_image_net(images, shape=[image_size, image_size])
+        output = auto_augment.auto_augment_image_net(images, shape=[image_size, image_size], interp_type=types.DALIInterpType.INTERP_NN)
     elif automatic_augmentation == "trivialaugment":
-        output = trivial_augment.trivial_augment_wide(images, shape=[image_size, image_size])
+        output = trivial_augment.trivial_augment_wide(images, shape=[image_size, image_size], interp_type=types.DALIInterpType.INTERP_NN)
     else:
         output = images
 
