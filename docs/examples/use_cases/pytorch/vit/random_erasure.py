@@ -1,29 +1,37 @@
+import math
+
 import numpy as np
 
 from nvidia.dali import fn, types
+from nvidia.dali import math as dali_math
 
-def random_erasure_params(count=1, min_area=0.02, max_area=1 / 3, min_aspect=1 / 3, max_aspect=None,
-                          seed=12345):
-    rng = np.random.default_rng(seed)
+
+def random_erasure_params(count=1, min_area=0.02, max_area=1 / 3, min_aspect=1 / 3,
+                          max_aspect=None):
     max_aspect = max_aspect or 1 / min_aspect
-    log_aspect_range = np.log(min_aspect), np.log(max_aspect)
+    min_aspect_log = math.log(min_aspect)
+    max_aspect_log = math.log(max_aspect)
 
-    def cb():
+    def rectangle():
+        area = fn.random.uniform(range=[min_area, max_area]) / count
+        aspect_ratio = fn.random.uniform(range=[min_aspect_log, max_aspect_log])
+        aspect_ratio = dali_math.exp(aspect_ratio)
+        shape = fn.stack(aspect_ratio, 1 / aspect_ratio)  # [aspect_ratio, 1 / aspect_ratio]
+        shape = dali_math.sqrt(area * shape)
+        shape = dali_math.clamp(shape, 0, 1)
+        anchor_bound = np.array(1., dtype=np.float32) - shape
+        anchor_y_range = fn.stack(np.array(0., dtype=np.float32), anchor_bound[0])
+        anchor_x_range = fn.stack(np.array(0., dtype=np.float32), anchor_bound[1])
+        anchor_y = fn.random.uniform(range=anchor_y_range)
+        anchor_x = fn.random.uniform(range=anchor_x_range)
+        anchor = fn.stack(anchor_y, anchor_x)
+        return shape, anchor
 
-        def rectangle():
-            area = rng.uniform(min_area, max_area) / count
-            aspect_ratio = np.exp(rng.uniform(*log_aspect_range))
-            shape = [aspect_ratio, 1. / aspect_ratio]
-            h = np.clip(np.sqrt(area * aspect_ratio), 0, 1)
-            w = np.clip(np.sqrt(area / aspect_ratio), 0, 1)
-            shape = np.array([h, w], dtype=np.float32)
-            anchor = np.float32(rng.uniform([0., 0.], 1. - shape))
-            return shape, anchor
+    rectangles = [rectangle() for _ in range(count)]
+    shapes = [shape for shape, _ in rectangles]
+    anchors = [anchor for _, anchor in rectangles]
 
-        params = [rectangle() for _ in range(count)]
-        return tuple(np.array([param[i] for param in params]) for i in range(2))
-
-    return cb
+    return fn.stack(*shapes), fn.stack(*anchors)
 
 
 def random_erasure(image, prob=0.25, mode="random", count=1, min_area=0.02, max_area=1 / 3,
@@ -38,13 +46,14 @@ def random_erasure(image, prob=0.25, mode="random", count=1, min_area=0.02, max_
         # per each pixel
         raise NotImplemented
 
+    max_aspect = max_aspect or 1 / min_aspect
+
     if fn.random.coin_flip(probability=prob):
-        shapes, anchors = fn.external_source(
-            source=random_erasure_params(count, min_area, max_area, min_aspect, max_aspect),
-            batch=False, num_outputs=2)
+        shapes, anchors = random_erasure_params(count, min_area, max_area, min_aspect, max_aspect)
 
         if mode == "random":
-            fill_values = fn.random.uniform(range=[0, 255], dtype=types.FLOAT, shape=(count, 3))
+            fill_values = fn.random.uniform(range=[0, color_range], dtype=types.FLOAT,
+                                            shape=(count, num_channels))
         else:
             fill_values = [fill_value] * count
 
