@@ -26,6 +26,7 @@ DALI_SCHEMA(DLTensorPythonFunctionImpl)
     .AddArg("function_id", R"code(Id of the python function)code", DALI_INT64)
     .AddOptionalArg("num_outputs", R"code(Number of outputs)code", 1)
     .AddArg("batch_processing", "Batch processing.", DALI_BOOL)
+    .AddArg("dl_tensor_stream_aware", "Coalesce batch, expose stream.", DALI_BOOL)
     .NumInput(0, 256)
     .OutputFn([](const OpSpec &spec) {return spec.GetArgument<int>("num_outputs");})
     .AddOptionalArg<std::vector<TensorLayout>>("output_layouts",
@@ -94,6 +95,30 @@ py::list PrepareDLTensorInputs<GPUBackend>(Workspace &ws) {
     auto &input = ws.UnsafeMutableInput<GPUBackend>(idx);
     py::list dl_tensor_list = TensorListToDLPackView(input);
     input_tuple.append(dl_tensor_list);
+  }
+  return input_tuple;
+}
+
+template <>
+py::list PrepareDLTensorInputsCoalesced<CPUBackend>(Workspace &ws) {
+  DALI_FAIL("Unsupported");
+}
+
+template <>
+py::list PrepareDLTensorInputsCoalesced<GPUBackend>(Workspace &ws) {
+  py::list input_tuple;
+  for (Index idx = 0; idx < ws.NumInput(); ++idx) {
+    auto &input = ws.UnsafeMutableInput<GPUBackend>(idx);
+    DALI_ENFORCE(is_uniform(input.shape()), "The shapes must be uniform");
+    // TODO(ktokarski) Make a copy if needed to make it back contigious
+    DALI_ENFORCE(input.IsContiguous(), "The input to jax op must be contigious");
+    auto batched_tensor = input.AsTensor();
+    py::capsule dl_tensor = DLTensorToCapsule(MakeDLTensor(
+        batched_tensor.raw_mutable_data(), batched_tensor.type(), true, batched_tensor.device_id(),
+        std::make_unique<DLTensorResource>(batched_tensor.shape())));
+    py::list dummy_list;
+    dummy_list.append(dl_tensor);
+    input_tuple.append(dummy_list);
   }
   return input_tuple;
 }

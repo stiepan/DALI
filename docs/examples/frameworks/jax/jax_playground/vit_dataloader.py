@@ -5,6 +5,7 @@ import jax.dlpack as jpack
 import dm_pix as pix
 
 from nvidia.dali import fn, types, pipeline_def
+from nvidia.dali.python_function_plugin import current_dali_stream
 
 from jax_playground.dali_utils import get_images
 
@@ -91,41 +92,61 @@ def jax_augmentations_impl(key, image):
     return image
 
 
+def batch_adapter(sample_cb, device):
+
+    batched_cb = jax.vmap(sample_cb)
+
+    def inner(key, batch):
+        n_samples = batch.shape[0]
+        keys = jax.random.split(key, num=n_samples + 1)
+        key, sub_keys = keys[0], keys[1:]
+        return key, batched_cb(sub_keys, batch)
+
+    return jax.jit(inner, device=device)
+
 class JaxAugmentations:
     def __init__(self, sample_cb, seed=42, device_id=0):
         gpus = jax.devices("gpu")
         assert len(gpus) > device_id
         self.key = jax.random.PRNGKey(seed)
         self.sample_cb = sample_cb
-        self.batched_cb = jax.jit(jax.vmap(sample_cb), device=gpus[device_id])
+        self.batched_cb = batch_adapter(sample_cb, gpus[device_id])
+
+    def inner(self, stream, key, batched_cb, images):
+        # print(dir(images))
+        assert len(images) == 1
+        with jax.transfer_guard("disallow"):
+            # jmages = [jpack.from_dlpack(image) for image in images]
+            jbatch = jpack.from_dlpack(images[0])
+            # jbatch = jnp.stack(jmages)
+            key, jout_batch = batched_cb(key, jbatch)
+            # out_batch = [jpack.to_dlpack(sample, stream=stream) for sample in jout_batch]
+            out_batch = [jpack.to_dlpack(jout_batch, stream=stream)]
+            return key, out_batch
 
     def __call__(self, images):
-        batch_size = len(images)
-        keys = jax.random.split(self.key, num=batch_size + 1)
         # TODO is it safe to split in tree-like fashion, or does it need to be linear
         # with the last key as the source for the next iters?
-        # TODO is it faster to gen here only two, pass to jited not vmapped and then to actual?
-        self.key, sub_keys = keys[0], keys[1:]
-        with jax.transfer_guard("disallow"):
-            jmages = [jpack.from_dlpack(image) for image in images]
-            jbatch = jnp.stack(jmages)
-            jout_batch = self.batched_cb(sub_keys, jbatch)
-            out_batch = [jpack.to_dlpack(sample) for sample in jout_batch]
-            return out_batch
+        dali_stream = current_dali_stream()
+        self.key, out = self.inner(dali_stream, self.key, self.batched_cb, images)
+        return out
 
 
-@pipeline_def(batch_size=batch_size, device_id=0, num_threads=4)
+@pipeline_def(batch_size=batch_size, device_id=0, num_threads=4, enable_conditionals=True)
 def jaxline():
     image = fn.external_source(
         lambda i: source_images_gpu[i % len(source_images_gpu)],
         batch=True, no_copy=True, device="gpu",
         layout="HWC", dtype=types.UINT8)
+    # if fn.random.coin_flip():
+    #     image = image
     image = fn.dl_tensor_python_function(
         image,
         batch_processing=True,
         output_layouts="HWC",
         function=JaxAugmentations(jax_augmentations_impl),
         synchronize_stream=False,
+        dl_tensor_stream_aware=True,
     )
     return image
 
