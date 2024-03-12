@@ -1,14 +1,15 @@
 import time
-from jax_playground.vit_dataloader import jaxline
+from jax_playground.vit_dataloader import jaxline, dali_pipeline
 
-jp = jaxline()
-jp.build()
+p = jaxline()
+# p = dali_pipeline()
+p.build()
 
 start = time.time()
 
 for _ in range(1000):
 # for _ in range(1):
-    jp.run()
+    p.run()
 
 end = time.time()
 print(end - start)

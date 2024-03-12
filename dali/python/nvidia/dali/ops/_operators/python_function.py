@@ -128,11 +128,11 @@ class PythonFunction(_get_base_impl("PythonFunction", "DLTensorPythonFunctionImp
 
     @staticmethod
     def function_wrapper_batch(
-        pipeline, function, num_outputs, from_dlpack, to_dlpack, *dlpack_inputs
+        pipeline, stream, function, num_outputs, from_dlpack, to_dlpack, *dlpack_inputs
     ):
         with pipeline:
             arrays = [[from_dlpack(dlpack) for dlpack in dl_input] for dl_input in dlpack_inputs]
-            arr_outs = function(*arrays)
+            arr_outs = function(stream, *arrays)
             if arr_outs is None:
                 return
 
@@ -230,16 +230,6 @@ class DLTensorPythonFunction(
     _registry.register_cpu_op("DLTensorPythonFunction")
     _registry.register_gpu_op("DLTensorPythonFunction")
 
-    def _function_wrapper_dlpack(self, batch_processing, function, num_outputs, *dlpack_inputs):
-        if batch_processing:
-            return PythonFunction.function_wrapper_batch(
-                self.pipeline, function, num_outputs, lambda x: x, lambda x: x, *dlpack_inputs
-            )
-        else:
-            return PythonFunction.function_wrapper_per_sample(
-                self.pipeline, function, num_outputs, lambda x: x, lambda x: x, *dlpack_inputs
-            )
-
     def __init__(
         self,
         function,
@@ -249,8 +239,17 @@ class DLTensorPythonFunction(
         batch_processing=True,
         **kwargs,
     ):
-        def func(*ts):
-            return self._function_wrapper_dlpack(batch_processing, function, num_outputs, *ts)
+        import jax.dlpack as jpack
+        def func(stream, *ts):
+            # return self._function_wrapper_dlpack(stream, batch_processing, function, num_outputs, *ts)
+            ts = tuple(jpack.from_dlpack(t) for t in ts)
+            # print(ts, function)
+            with self.pipeline:
+                out = function(*ts)
+            if isinstance(out, tuple):
+                return tuple(jpack.to_dlpack(t, stream=stream) for t in out)
+            else:
+                return jpack.to_dlpack(out, stream=stream)
 
         super().__init__(
             function=func,
@@ -260,3 +259,42 @@ class DLTensorPythonFunction(
             batch_processing=batch_processing,
             **kwargs,
         )
+
+
+# class JaxFunction(
+#     _get_base_impl("DLTensorPythonFunction", "DLTensorPythonFunctionImpl")
+# ):
+#     _registry.register_cpu_op("JaxFunction")
+#     _registry.register_gpu_op("JaxFunction")
+
+#     def _function_wrapper_dlpack(self, batch_processing, function, num_outputs, *dlpack_inputs):
+#         assert batch_processing
+#         if batch_processing:
+#             return PythonFunction.function_wrapper_batch(
+#                 self.pipeline, function, num_outputs, lambda x: x, lambda x: x, *dlpack_inputs
+#             )
+#         else:
+#             return PythonFunction.function_wrapper_per_sample(
+#                 self.pipeline, function, num_outputs, lambda x: x, lambda x: x, *dlpack_inputs
+#             )
+
+#     def __init__(
+#         self,
+#         function,
+#         num_outputs=1,
+#         device="cpu",
+#         synchronize_stream=True,
+#         batch_processing=True,
+#         **kwargs,
+#     ):
+#         def func(*ts):
+#             return self._function_wrapper_dlpack(batch_processing, function, num_outputs, *ts)
+
+#         super().__init__(
+#             function=func,
+#             num_outputs=num_outputs,
+#             device=device,
+#             synchronize_stream=synchronize_stream,
+#             batch_processing=batch_processing,
+#             **kwargs,
+#         )

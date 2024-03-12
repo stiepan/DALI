@@ -293,9 +293,12 @@ void Executor<WorkspacePolicy, QueuePolicy>::RunGPUImpl(size_t iteration_id) {
   }
   DeviceGuard g(device_id_);
 
-  // Enforce our assumed dependency between consecutive
-  // iterations of a stage of the pipeline.
-  CUDA_CALL(cudaEventSynchronize(gpu_stage_event_));
+  {
+    DomainTimeRange tr("[DALI][Executor] Wait for RunGPUStageEvent");
+    // Enforce our assumed dependency between consecutive
+    // iterations of a stage of the pipeline.
+    CUDA_CALL(cudaEventSynchronize(gpu_stage_event_));
+  }
 
   int stage_batch_size = batch_sizes_gpu_.front();
   batch_sizes_gpu_.pop();

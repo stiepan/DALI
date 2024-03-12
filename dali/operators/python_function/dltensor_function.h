@@ -178,17 +178,22 @@ class DLTensorPythonFunctionImpl : public StatelessOperator<Backend> {
 
   void RunImpl(Workspace &ws) override {
     SetOutputLayouts(ws);
-    std::lock_guard<std::mutex> operator_guard(operator_lock);
+    // std::lock_guard<std::mutex> operator_guard(operator_lock);
     py::gil_scoped_acquire interpreter_guard{};
     output_o_ = py::none();
     auto curr_batch_size = GetCurrBatchSize(ws);
     try {
       if (dl_tensor_stream_aware_) {
+        DomainTimeRange tr("[DALI][JAXOP] Running the op");
         DALI_ENFORCE(!synchronize_stream_ && batch_processing,
                      "Don't synchronize in this mode, use batch processing");
         detail::StreamSynchronizer<Backend> sync(ws, false);
         input_o_ = detail::PrepareDLTensorInputsCoalesced<Backend>(ws);
-        output_o_ = python_function(*input_o_);
+        {
+          cudaStream_t stream = ws.stream();
+          DomainTimeRange tr("[DALI][JAXOP] Running the python_function");
+          output_o_ = python_function(reinterpret_cast<int64_t>(stream), *input_o_);
+        }
       } else {
         detail::StreamSynchronizer<Backend> sync(ws, synchronize_stream_);
         if (batch_processing) {
@@ -215,44 +220,56 @@ class DLTensorPythonFunctionImpl : public StatelessOperator<Backend> {
       throw std::runtime_error(to_string("DLTensorPythonFunction error: ") + to_string(e.what()));
     }
     if (!output_o_.is_none()) {
+      DomainTimeRange tr("[DALI][JAXOP] Output setting");
       if (dl_tensor_stream_aware_) {
         py::tuple return_tuple =
             (py::tuple::check_(output_o_)) ? output_o_ : py::make_tuple(output_o_);
         for (Index idx = 0; idx < ws.NumOutput(); ++idx) {
           auto &tlist = ws.Output<Backend>(idx);
 
-          py::list dl_list = py::cast<py::list>(return_tuple[idx]);
-          std::vector<DLMTensorPtr> dl_tensors = detail::CastToDLTensorList<Backend>(dl_list, 1, idx);
-          DALI_ENFORCE(dl_tensors.size() == 1);
-          DLMTensorPtr &dl_batched_tensor_ptr = dl_tensors[0];
+          py::capsule py_dl_output = py::cast<py::capsule>(return_tuple[idx]);
+          DLMTensorPtr dl_batched_tensor_ptr = DLMTensorPtrFromCapsule(py_dl_output);
+          DALI_ENFORCE(
+              dl_batched_tensor_ptr->dl_tensor.device.device_type == detail::Backend2DLDevice<Backend>(),
+              "Wrong output backend");
           DLTensor &dl_batched_tensor = dl_batched_tensor_ptr->dl_tensor;
           DALI_ENFORCE(dl_batched_tensor.ndim >= 1);
           DALI_ENFORCE(dl_batched_tensor.shape[0] == curr_batch_size);
-          TensorListShape<> out_shape{};
+
           TensorShape<> sample_shape = make_span(dl_batched_tensor.shape + 1, dl_batched_tensor.ndim - 1);
+          // TensorListShape<> out_shape = uniform_list_shape(curr_batch_size, sample_shape);
           auto dtype = DLToDALIType(dl_batched_tensor.dtype);
-          tlist.Resize(uniform_list_shape(curr_batch_size, sample_shape), dtype);
-          tlist.set_order(ws.output_order());
-
-          const auto has_dense_strides = [&]() -> bool {
-            if (dl_batched_tensor.strides) {
-              int64_t dense_stride = 1;
-              for (int d = dl_batched_tensor.ndim - 1; d >= 0; d--) {
-                if (dl_batched_tensor.strides[d] != dense_stride) {
-                  return false;
-                }
-                dense_stride *= dl_batched_tensor.shape[d];
-              }
-            }
-            return true;
-          };
-
-          DALI_ENFORCE(has_dense_strides());
           auto type_info = dali::TypeTable::GetTypeInfo(dtype);
-          DALI_ENFORCE(tlist.IsContiguous());
-          type_info.Copy<Backend, Backend>(unsafe_raw_mutable_data(tlist), dl_batched_tensor.data,
-                                           sample_shape.num_elements() * curr_batch_size, ws.stream(),
-                                           false);
+          std::shared_ptr<void> dl_data{
+            dl_batched_tensor.data,
+            [dl_pack_ptr=std::move(dl_batched_tensor_ptr)](void *) mutable {
+              dl_pack_ptr.reset();
+            }};
+          int64_t bytes = sample_shape.num_elements() * curr_batch_size * type_info.size();
+          tlist.ShareData(dl_data, bytes, false, uniform_list_shape(curr_batch_size, sample_shape),
+                          dtype, dl_batched_tensor.device.device_id, ws.stream(), "");
+          // tlist.Resize(uniform_list_shape(curr_batch_size, sample_shape), dtype);
+          // tlist.set_order(ws.stream());
+
+          // const auto has_dense_strides = [&]() -> bool {
+          //   if (dl_batched_tensor.strides) {
+          //     int64_t dense_stride = 1;
+          //     for (int d = dl_batched_tensor.ndim - 1; d >= 0; d--) {
+          //       if (dl_batched_tensor.strides[d] != dense_stride) {
+          //         return false;
+          //       }
+          //       dense_stride *= dl_batched_tensor.shape[d];
+          //     }
+          //   }
+          //   return true;
+          // };
+
+          // DALI_ENFORCE(has_dense_strides());
+          // auto type_info = dali::TypeTable::GetTypeInfo(dtype);
+          // DALI_ENFORCE(tlist.IsContiguous());
+          // type_info.Copy<Backend, Backend>(unsafe_raw_mutable_data(tlist), dl_batched_tensor.data,
+          //                                  sample_shape.num_elements() * curr_batch_size, ws.stream(),
+          //                                  false);
           // CopyOutputData(tlist, dl_tensors, ws);
         }
       } else {

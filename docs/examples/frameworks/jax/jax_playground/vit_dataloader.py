@@ -5,7 +5,7 @@ import jax.dlpack as jpack
 import dm_pix as pix
 
 from nvidia.dali import fn, types, pipeline_def
-from nvidia.dali.python_function_plugin import current_dali_stream
+# from nvidia.dali.python_function_plugin import current_dali_stream
 
 from jax_playground.dali_utils import get_images
 
@@ -98,9 +98,8 @@ def batch_adapter(sample_cb, device):
 
     def inner(key, batch):
         n_samples = batch.shape[0]
-        keys = jax.random.split(key, num=n_samples + 1)
-        key, sub_keys = keys[0], keys[1:]
-        return key, batched_cb(sub_keys, batch)
+        keys = jax.random.split(key, num=n_samples)
+        return batched_cb(keys, batch)
 
     return jax.jit(inner, device=device)
 
@@ -110,34 +109,34 @@ class JaxAugmentations:
         assert len(gpus) > device_id
         self.key = jax.random.PRNGKey(seed)
         self.sample_cb = sample_cb
+        # self.batched_cb = jax.jit(jax.vmap(sample_cb), device=gpus[device_id])
         self.batched_cb = batch_adapter(sample_cb, gpus[device_id])
 
-    def inner(self, stream, key, batched_cb, images):
+    # def inner(self, key, batched_cb, images):
         # print(dir(images))
-        assert len(images) == 1
-        with jax.transfer_guard("disallow"):
-            # jmages = [jpack.from_dlpack(image) for image in images]
-            jbatch = jpack.from_dlpack(images[0])
-            # jbatch = jnp.stack(jmages)
-            key, jout_batch = batched_cb(key, jbatch)
-            # out_batch = [jpack.to_dlpack(sample, stream=stream) for sample in jout_batch]
-            out_batch = [jpack.to_dlpack(jout_batch, stream=stream)]
-            return key, out_batch
+        # with jax.transfer_guard("disallow"):
+        # jmages = [jpack.from_dlpack(image) for image in images]
+        # jbatch = jnp.stack(jmages)
+        # jout_batch = batched_cb(key, jbatch)
+        # out_batch = [jpack.to_dlpack(sample, stream=stream) for sample in jout_batch]
+        # out_batch = jpack.to_dlpack(jout_batch, stream=stream)
+        # return out_batch
 
     def __call__(self, images):
         # TODO is it safe to split in tree-like fashion, or does it need to be linear
         # with the last key as the source for the next iters?
-        dali_stream = current_dali_stream()
-        self.key, out = self.inner(dali_stream, self.key, self.batched_cb, images)
-        return out
+        # dali_stream = current_dali_stream()
+        # self.key, sub_key = jax.random.split(self.key)
+        return self.batched_cb(self.key, images)
 
 
-@pipeline_def(batch_size=batch_size, device_id=0, num_threads=4, enable_conditionals=True)
+@pipeline_def(batch_size=batch_size, device_id=0, num_threads=4, prefetch_queue_depth=4)
 def jaxline():
-    image = fn.external_source(
-        lambda i: source_images_gpu[i % len(source_images_gpu)],
-        batch=True, no_copy=True, device="gpu",
-        layout="HWC", dtype=types.UINT8)
+    # image = fn.external_source(
+    #     lambda i: source_images_gpu[i % len(source_images_gpu)],
+    #     batch=True, no_copy=True, device="gpu",
+    #     layout="HWC", dtype=types.UINT8)
+    image = types.Constant([np.array(s) for s in source_images_gpu[0].as_cpu()][5], device="gpu")
     # if fn.random.coin_flip():
     #     image = image
     image = fn.dl_tensor_python_function(
@@ -151,23 +150,24 @@ def jaxline():
     return image
 
 
-@pipeline_def(batch_size=batch_size, device_id=0, num_threads=4)
+@pipeline_def(batch_size=batch_size, device_id=0, num_threads=4, prefetch_queue_depth=4)
 def dali_pipeline():
-    image = fn.external_source(
-        lambda i: source_images_gpu[i % len(source_images_gpu)],
-        batch=True, no_copy=True, device="gpu",
-        layout="HWC", dtype=types.UINT8)
+    # image = fn.external_source(
+    #     lambda i: source_images_gpu[i % len(source_images_gpu)],
+    #     batch=True, no_copy=True, device="gpu",
+    #     layout="HWC", dtype=types.UINT8)
 
+    image = types.Constant([np.array(s) for s in source_images_gpu[0].as_cpu()][5], device="gpu")
     image = fn.flip(image, depthwise=0, horizontal=fn.random.coin_flip(seed=42))
 
     # color jitter
-    brightness = fn.random.uniform(range=[0.6,1.4], seed=42)
-    contrast = fn.random.uniform(range=[0.6,1.4], seed=42)
-    saturation = fn.random.uniform(range=[0.6,1.4], seed=42)
-    hue = fn.random.uniform(range=[0.9,1.1], seed=42)
-    image = fn.color_twist(image,
-                            brightness=brightness,
-                            contrast=contrast,
-                            hue=hue,
-                            saturation=saturation)
+    # brightness = fn.random.uniform(range=[0.6,1.4], seed=42)
+    # contrast = fn.random.uniform(range=[0.6,1.4], seed=42)
+    # saturation = fn.random.uniform(range=[0.6,1.4], seed=42)
+    # hue = fn.random.uniform(range=[0.9,1.1], seed=42)
+    # image = fn.color_twist(image,
+    #                         brightness=brightness,
+    #                         contrast=contrast,
+    #                         hue=hue,
+    #                         saturation=saturation)
     return image

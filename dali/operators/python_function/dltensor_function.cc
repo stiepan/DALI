@@ -16,6 +16,8 @@
 #include <memory>
 #include <utility>
 #include <string>
+#include "dali/core/nvtx.h"
+#include "dali/core/cuda_event_pool.h"
 #include "dali/operators/python_function/dltensor_function.h"
 #include "dali/pipeline/util/copy_with_stride.h"
 
@@ -73,6 +75,48 @@ If set to True, the function will receive its arguments as lists of DLPack tenso
 
 namespace detail {
 
+struct DLPackWrap {
+  DLPackWrap(DLMTensorPtr &&ptr, cudaStream_t stream)
+      : data_{std::move(ptr)} {
+    DomainTimeRange tr("[DALI][JAXOP] Create dlwrap");
+    auto &pool = CUDAEventPool::instance();
+    device_id_ = data_->dl_tensor.device.device_id;
+    device_type_ = data_->dl_tensor.device.device_type;
+    data_ready_ = pool.Get(device_id_);
+    CUDA_CALL(cudaEventRecord(data_ready_, stream));
+  }
+
+  DLPackWrap(DLPackWrap&) = delete;
+  DLPackWrap(DLPackWrap&&) = default;
+
+  int device_type() {
+    return device_type_;
+  }
+
+  int device_id() {
+    return device_id_;
+  }
+
+  py::capsule dl_pack(cudaStream_t consumer_stream) {
+    DALI_ENFORCE(data_, "The dl pack object was already consumed");
+    // TODO it does not have to be that way, -1 is explicit ask for non-synchronization
+    // according to the standard. Just checking the JAX impl behaviour.
+    DALI_ENFORCE(consumer_stream >= 0);
+    CUDA_CALL(cudaStreamWaitEvent(consumer_stream, data_ready_, 0));
+    return py::capsule(data_.release(), DLTENSOR_NAME, &DLTensorCapsuleDestructor);
+  }
+
+  // ~DLPackWrap() {
+  //   std::cerr << "hmmst " << (this) << std::endl;
+  // }
+
+ private:
+  DLMTensorPtr data_;
+  int device_id_;
+  DLDeviceType device_type_;
+  CUDAEvent data_ready_;
+};
+
 template <>
 py::list PrepareDLTensorInputs<CPUBackend>(Workspace &ws) {
   py::list input_tuple;
@@ -106,6 +150,7 @@ py::list PrepareDLTensorInputsCoalesced<CPUBackend>(Workspace &ws) {
 
 template <>
 py::list PrepareDLTensorInputsCoalesced<GPUBackend>(Workspace &ws) {
+  DomainTimeRange tr("[DALI][JAXOP] Setting up the input");
   py::list input_tuple;
   for (Index idx = 0; idx < ws.NumInput(); ++idx) {
     auto &input = ws.UnsafeMutableInput<GPUBackend>(idx);
@@ -113,12 +158,17 @@ py::list PrepareDLTensorInputsCoalesced<GPUBackend>(Workspace &ws) {
     // TODO(ktokarski) Make a copy if needed to make it back contigious
     DALI_ENFORCE(input.IsContiguous(), "The input to jax op must be contigious");
     auto batched_tensor = input.AsTensor();
-    py::capsule dl_tensor = DLTensorToCapsule(MakeDLTensor(
+    // py::capsule dl_tensor = DLTensorToCapsule(MakeDLTensor(
+    //     batched_tensor.raw_mutable_data(), batched_tensor.type(), true, batched_tensor.device_id(),
+    //     std::make_unique<DLTensorResource>(batched_tensor.shape())));
+    DLPackWrap dl_tensor{
+      MakeDLTensor(
         batched_tensor.raw_mutable_data(), batched_tensor.type(), true, batched_tensor.device_id(),
-        std::make_unique<DLTensorResource>(batched_tensor.shape())));
-    py::list dummy_list;
-    dummy_list.append(dl_tensor);
-    input_tuple.append(dummy_list);
+        std::make_unique<DLTensorResource>(batched_tensor.shape())),
+        ws.stream(),
+    };
+    py::object py_dl_tensor = py::cast(std::move(dl_tensor));
+    input_tuple.append(py_dl_tensor);
   }
   return input_tuple;
 }
@@ -233,6 +283,8 @@ struct DLTensorNumpyResource: public DLTensorResource {
 };
 
 PYBIND11_MODULE(python_function_plugin, m) {
+  using namespace pybind11::literals; // NOLINT
+
   m.def("current_dali_stream", []() { return reinterpret_cast<uint64_t>(GetCurrentStream()); });
 
   m.def("DLTensorToArray", [](py::capsule dl_capsule) {
@@ -261,6 +313,22 @@ PYBIND11_MODULE(python_function_plugin, m) {
                                        false, 0, std::make_unique<DLTensorNumpyResource>(array));
     return DLTensorToCapsule(std::move(dlm_tensor_ptr));
   });
+
+  py::class_<detail::DLPackWrap>(m, "DLPackWrap")
+      .def("__dlpack_device__",
+           [](detail::DLPackWrap &self) {
+             DomainTimeRange tr("[DALI][JAXOP] __dlpack_device__ call");
+             return std::tuple<int, int>{self.device_type(), self.device_id()};
+           })
+      .def(
+          "__dlpack__",
+          [](detail::DLPackWrap &self, int64_t stream) {
+            DomainTimeRange tr("[DALI][JAXOP] __dlpack__ call");
+            return self.dl_pack(reinterpret_cast<cudaStream_t>(stream));
+            // return self.dl_pack();
+          },
+          "stream"_a);
+      // .def("current_stream", [](detail::DLPackWrap &self) { return self.stream(); });
 }
 
 }  // namespace dali
