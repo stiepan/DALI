@@ -1730,7 +1730,32 @@ PYBIND11_MODULE(backend_impl, m) {
            })
       .def("resize", &SharedMem::resize)
       .def("close_handle", &SharedMem::close_handle)
-      .def("close", &SharedMem::close);
+      .def("close", &SharedMem::close)
+      .def("pin", &SharedMem::pin)
+      .def("get_raw_ptr", [](SharedMem &mem) -> uint64_t {return reinterpret_cast<uint64_t>(mem.get_raw_ptr());})
+      .def("cuda_attr", [](SharedMem &shm) {
+        cudaPointerAttributes attrs = {};
+        CUDA_CALL(cudaPointerGetAttributes(&attrs, shm.get_raw_ptr()));
+        py::tuple res(3);
+        res[0] = attrs.device;
+        res[1] = reinterpret_cast<uint64_t>(attrs.devicePointer);
+        res[2] = reinterpret_cast<uint64_t>(attrs.hostPointer);
+        return res;
+      })
+      .def("mem_async_cpy_to_device", [](SharedMem &shm, uint64_t dest_addr){
+        void *dest_ptr = reinterpret_cast<void *>(dest_addr);
+        if (dest_ptr == nullptr) {
+          throw std::runtime_error("Got null ptr as the destination");
+        }
+        CUDA_CALL(cudaMemcpyAsync(dest_ptr, shm.get_raw_ptr(), shm.size(), cudaMemcpyHostToDevice, 0));
+      })
+      .def("mem_async_cpy_from_device", [](SharedMem &shm, uint64_t src_addr) {
+        void *src_ptr = reinterpret_cast<void *>(src_addr);
+        if (src_ptr == nullptr) {
+          throw std::runtime_error("Got null ptr as the source");
+        }
+        CUDA_CALL(cudaMemcpyAsync(shm.get_raw_ptr(), src_ptr, shm.size(), cudaMemcpyDeviceToHost, 0));
+      });
 
 #endif
 

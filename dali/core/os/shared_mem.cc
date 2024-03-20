@@ -23,6 +23,7 @@
 
 #include "dali/core/format.h"
 #include "dali/core/os/shared_mem.h"
+#include "dali/core/cuda_error.h"
 
 namespace dali {
 
@@ -143,11 +144,19 @@ uint8_t *SharedMem::get_raw_ptr() {
   return !memory_mapping_ ? nullptr : memory_mapping_.get_raw_ptr();
 }
 
+void SharedMem::pin() {
+  CUDA_CALL(cudaHostRegister(get_raw_ptr(), size(), cudaHostRegisterPortable));
+  pinned_ = true;
+}
+
 void SharedMem::close_handle() {
   shm_handle_.reset();
 }
 
 void SharedMem::resize(uint64_t size, bool trunc) {
+  if (pinned_) {
+    throw std::logic_error("Cannot resize the shared memory, because it is pinned.");
+  }
   size_ = size * sizeof(uint8_t);
   if (trunc) {
     if (!shm_handle_) {
@@ -166,6 +175,9 @@ void SharedMem::resize(uint64_t size, bool trunc) {
 }
 
 void SharedMem::close() {
+  if (pinned_) {
+    CUDA_CALL(cudaHostUnregister(get_raw_ptr()));
+  }
   memory_mapping_.reset();
   shm_handle_.reset();
 }

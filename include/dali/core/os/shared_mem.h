@@ -147,6 +147,8 @@ class DLL_PUBLIC SharedMem {
 
   DLL_PUBLIC uint8_t *get_raw_ptr();
 
+  DLL_PUBLIC void pin();
+
   /**
    * @brief Resize the current chunk with optional call to ftruncate (to actually change the size)
    * or just remap to the new size.
@@ -168,6 +170,7 @@ class DLL_PUBLIC SharedMem {
   uint64_t size_;
   ShmHandle shm_handle_;
   MemoryMapping memory_mapping_;
+  bool pinned_ = false;
 };
 
 }  // namespace dali
