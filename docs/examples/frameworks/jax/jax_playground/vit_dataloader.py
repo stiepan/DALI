@@ -5,6 +5,7 @@ import jax.dlpack as jpack
 import dm_pix as pix
 
 from nvidia.dali import fn, types, pipeline_def
+
 # from nvidia.dali.python_function_plugin import current_dali_stream
 
 from jax_playground.dali_utils import get_images
@@ -58,13 +59,17 @@ def eye3(val):
 
 
 def color_twist_mat(brightness, contrast, hue, saturation, value):
-    rgb2yiq = jnp.array([
-        [0.299, 0.587, 0.114],
-        [0.596, -0.274, -0.321],
-        [0.211, -0.523, 0.311]
-    ])
+    rgb2yiq = jnp.array([[0.299, 0.587, 0.114], [0.596, -0.274, -0.321], [0.211, -0.523, 0.311]])
     yiq2rgb = jnp.linalg.inv(rgb2yiq)
-    return eye3(brightness) @ eye3(contrast) @ yiq2rgb @ hue_mat(hue) @ sat_mat(saturation) @ eye3(value) @ rgb2yiq
+    return (
+        eye3(brightness)
+        @ eye3(contrast)
+        @ yiq2rgb
+        @ hue_mat(hue)
+        @ sat_mat(saturation)
+        @ eye3(value)
+        @ rgb2yiq
+    )
 
 
 def jax_color_twist(image, brightness, contrast, saturation, hue, value):
@@ -103,6 +108,7 @@ def batch_adapter(sample_cb, device):
 
     return jax.jit(inner, device=device)
 
+
 class JaxAugmentations:
     def __init__(self, sample_cb, seed=42, device_id=0):
         gpus = jax.devices("gpu")
@@ -113,14 +119,14 @@ class JaxAugmentations:
         self.batched_cb = batch_adapter(sample_cb, gpus[device_id])
 
     # def inner(self, key, batched_cb, images):
-        # print(dir(images))
-        # with jax.transfer_guard("disallow"):
-        # jmages = [jpack.from_dlpack(image) for image in images]
-        # jbatch = jnp.stack(jmages)
-        # jout_batch = batched_cb(key, jbatch)
-        # out_batch = [jpack.to_dlpack(sample, stream=stream) for sample in jout_batch]
-        # out_batch = jpack.to_dlpack(jout_batch, stream=stream)
-        # return out_batch
+    # print(dir(images))
+    # with jax.transfer_guard("disallow"):
+    # jmages = [jpack.from_dlpack(image) for image in images]
+    # jbatch = jnp.stack(jmages)
+    # jout_batch = batched_cb(key, jbatch)
+    # out_batch = [jpack.to_dlpack(sample, stream=stream) for sample in jout_batch]
+    # out_batch = jpack.to_dlpack(jout_batch, stream=stream)
+    # return out_batch
 
     def __call__(self, images):
         # TODO is it safe to split in tree-like fashion, or does it need to be linear
