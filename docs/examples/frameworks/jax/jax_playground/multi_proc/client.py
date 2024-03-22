@@ -79,6 +79,8 @@ def main():
     with jax.spmd_mode("allow_all"):
         jax.debug.visualize_array_sharding(dali_sharded_array.ravel())
 
+    print(dali_sharded_array.shape)
+
     @partial(
         shard_map,
         mesh=mesh,
