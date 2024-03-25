@@ -1,4 +1,4 @@
-# Copyright (c) 2020-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright (c) 2020-2024, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -212,3 +212,10 @@ def test_schema_name_numba():
     import nvidia.dali.plugin.numba  # noqa: F401
 
     _test_schema_name_for_module("nvidia.dali.plugin.numba.fn.experimental")
+
+
+@attr("jax")
+def test_schema_name_jax():
+    import nvidia.dali.plugin.jax  # noqa: F401
+
+    _test_schema_name_for_module("nvidia.dali.plugin.jax.fn")

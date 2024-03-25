@@ -1,4 +1,4 @@
-# Copyright (c) 2020-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright (c) 2020-2024, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import nvidia.dali.plugin.pytorch
+import nvidia.dali.plugin.jax
 import nvidia.dali.plugin.numba
 import inspect
 import sys
@@ -32,6 +33,7 @@ exclude_ops_members = {"nvidia.dali.ops": ["PythonFunctionBase"]}
 fn_modules = {
     "nvidia.dali.fn": nvidia.dali.fn,
     "nvidia.dali.plugin.pytorch.fn": nvidia.dali.plugin.pytorch.fn,
+    "nvidia.dali.plugin.jax.fn": nvidia.dali.plugin.jax.fn,
     "nvidia.dali.plugin.numba.fn.experimental": nvidia.dali.plugin.numba.fn.experimental,
 }
 

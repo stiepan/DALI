@@ -1,4 +1,4 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright (c) 2023-2024, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,17 @@
 # limitations under the License.
 import sys
 import jax
+
+from nvidia.dali import internal as _internal
+from nvidia.dali import ops
+
+from . import fn  # noqa: F401
+
+from nvidia.dali.plugin.jax._jax_function import JaxPythonFunction as JaxPythonFunction
+
+_internal._adjust_operator_module(JaxPythonFunction, sys.modules[__name__], [])
+
+ops._wrap_op(JaxPythonFunction, "fn", __name__)
 
 from distutils.version import LooseVersion
 from .iterator import DALIGenericIterator, data_iterator
