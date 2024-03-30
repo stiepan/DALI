@@ -12,17 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
-
 import jax
 import jax.dlpack
-from jax.sharding import NamedSharding, PositionalSharding, Sharding
-
-from nvidia.dali import ops
-from nvidia.dali.ops._operators import python_function
+import jax.sharding
 
 
-def _with_gpu_dl_tensors_as_arrays(callback):
+def with_gpu_dl_tensors_as_arrays(callback):
 
     def inner(stream, *dl_tensors):
         ts = tuple(jax.dlpack.from_dlpack(t) for t in dl_tensors)
@@ -34,7 +29,7 @@ def _with_gpu_dl_tensors_as_arrays(callback):
     return inner
 
 
-def _with_cpu_dl_tensors_as_arrays(callback):
+def with_cpu_dl_tensors_as_arrays(callback):
 
     def inner(*dl_tensors):
         ts = tuple(jax.dlpack.from_dlpack(t) for t in dl_tensors)
@@ -46,26 +41,26 @@ def _with_cpu_dl_tensors_as_arrays(callback):
     return inner
 
 
-def _with_sharding(callback, sharding: Sharding):
+def with_sharding(callback, sharding):
     if jax.local_device_count() != 1:
         raise NotImplementedError(
             f"Currently, the `jax_python_function` supports only global/multiprocessing sharding. The number of local devices seen by the process must be 1, got {jax.local_device_count()}"
         )
 
-    if not isinstance(sharding, (NamedSharding, PositionalSharding)):
+    if not isinstance(sharding, (jax.sharding.NamedSharding, jax.sharding.PositionalSharding)):
         raise ValueError(
             f"The value passed as `sharding` must be an instance of `NamedSharding` or `PositionalSharding`, got value of a type {type(sharding)}"
         )
 
-    def as_sharded_array(array):
+    def as_sharded_array(array: jax.Array) -> jax.Array:
         array_shape = array.shape
-        if isinstance(sharding, NamedSharding):
+        if isinstance(sharding, jax.sharding.NamedSharding):
             global_shape = (sharding.mesh.size * array_shape[0], *array_shape[1:])
         else:
             global_shape = (sharding.shape[0] * array_shape[0], *array_shape[1:])
         return jax.make_array_from_single_device_arrays(global_shape, sharding, [array])
 
-    def as_single_device_array(sharded_array):
+    def as_single_device_array(sharded_array: jax.Array) -> jax.Array:
         local_arrays = [x.data for x in sharded_array.addressable_shards]
         if len(local_arrays) != 1:
             raise ValueError(
@@ -73,7 +68,7 @@ def _with_sharding(callback, sharding: Sharding):
             )
         return local_arrays[0]
 
-    def inner(*arrays):
+    def inner(*arrays: jax.Array):
         sharded_arrays = tuple(as_sharded_array(array) for array in arrays)
         out = callback(*sharded_arrays)
         if out is not None:
@@ -83,26 +78,11 @@ def _with_sharding(callback, sharding: Sharding):
     return inner
 
 
-def _jax_callback_wrapper(function, device, sharding):
+def jax_callback_wrapper(function, sharding, device):
 
     assert device in ("cpu", "gpu")
 
     dl_pack_wrapper = (
-        _with_cpu_dl_tensors_as_arrays if device == "cpu" else _with_gpu_dl_tensors_as_arrays
+        with_cpu_dl_tensors_as_arrays if device == "cpu" else with_gpu_dl_tensors_as_arrays
     )
-    return dl_pack_wrapper(function if sharding is None else _with_sharding(function, sharding))
-
-
-class JaxPythonFunction(
-    python_function._get_base_impl("JaxPythonFunction", "JaxPythonFunctionImpl")
-):
-    ops.register_cpu_op("JaxPythonFunction")
-    ops.register_gpu_op("JaxPythonFunction")
-
-    def __init__(self, function, device, sharding: Optional[Sharding] = None, **kwargs):
-        self._sharding = sharding
-        super().__init__(
-            function=_jax_callback_wrapper(function, device, sharding),
-            device=device,
-            **kwargs,
-        )
+    return dl_pack_wrapper(function if sharding is None else with_sharding(function, sharding))

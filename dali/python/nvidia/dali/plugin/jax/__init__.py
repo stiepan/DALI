@@ -14,16 +14,7 @@
 import sys
 import jax
 
-from nvidia.dali import internal as _internal
-from nvidia.dali import ops
-
 from . import fn  # noqa: F401
-
-from nvidia.dali.plugin.jax._jax_function import JaxPythonFunction as JaxPythonFunction
-
-_internal._adjust_operator_module(JaxPythonFunction, sys.modules[__name__], [])
-
-ops._wrap_op(JaxPythonFunction, "fn", __name__)
 
 from distutils.version import LooseVersion
 from .iterator import DALIGenericIterator, data_iterator
@@ -38,4 +29,4 @@ assert LooseVersion(jax.__version__) >= LooseVersion(
 ), "DALI JAX support requires JAX 0.4.11 or above"
 
 
-__all__ = ["DALIGenericIterator", "data_iterator"]
+__all__ = ["DALIGenericIterator", "data_iterator", "fn"]

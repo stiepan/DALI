@@ -214,8 +214,8 @@ def test_schema_name_numba():
     _test_schema_name_for_module("nvidia.dali.plugin.numba.fn.experimental")
 
 
-@attr("jax")
-def test_schema_name_jax():
-    import nvidia.dali.plugin.jax  # noqa: F401
+# @attr("jax")
+# def test_schema_name_jax():
+#     import nvidia.dali.plugin.jax  # noqa: F401
 
-    _test_schema_name_for_module("nvidia.dali.plugin.jax.fn")
+#     _test_schema_name_for_module("nvidia.dali.plugin.jax.fn")

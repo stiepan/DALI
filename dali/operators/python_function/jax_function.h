@@ -167,9 +167,9 @@ inline TensorShape<> ParseValidateExternalOutput(const DLTensor &dl_batch, int e
 
 
 template <typename Backend>
-class JaxPythonFunctionImpl : public StatelessOperator<Backend> {
+class JaxFunction : public StatelessOperator<Backend> {
  public:
-  inline explicit JaxPythonFunctionImpl(const OpSpec &spec)
+  inline explicit JaxFunction(const OpSpec &spec)
       : StatelessOperator<Backend>(spec),
         python_function_(py::reinterpret_borrow<py::object>(
             reinterpret_cast<PyObject *>(spec.GetArgument<int64_t>("function_id")))),
@@ -186,7 +186,7 @@ class JaxPythonFunctionImpl : public StatelessOperator<Backend> {
         make_string("The number of `output_layouts` must match the `num_outputs` argument."));
   }
 
-  ~JaxPythonFunctionImpl() {
+  ~JaxFunction() {
     auto interpreter_lock = py::gil_scoped_acquire();
     python_function_.dec_ref();
     python_function_.release();

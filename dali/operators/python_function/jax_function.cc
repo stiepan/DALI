@@ -20,26 +20,7 @@
 
 namespace dali {
 
-DALI_SCHEMA(JaxPythonFunctionImpl)
-    .AddArg("function_id", R"code(Id of the python function)code", DALI_INT64)
-    .AddOptionalArg("num_outputs", R"code(Number of outputs)code", 1)
-    .NumInput(0, 256)
-    .OutputFn([](const OpSpec &spec) { return spec.GetArgument<int>("num_outputs"); })
-    .AddOptionalArg<std::vector<TensorLayout>>("output_layouts",
-                                               R"code(Tensor data layouts for the outputs.)code",
-                                               nullptr)
-    .NoPrune()
-    .Unserializable()
-    .MakeInternal();
-
-// TODO(ktokarski) preserve argument shows up in the function docs
-// even though it's not configurable and always true
-// Either make it non-preservable or get rid of the argument from the docs
-
-// TODO(ktokarski) Include `sharding` param in the docs
-
-// TODO(ktokarski) Mark it as experimental
-DALI_SCHEMA(JaxPythonFunction)
+DALI_SCHEMA(_JaxFunction)
     .DocStr(R"code(Runs the `function` callback, passing in the specified arguments as JAX arrays.
 
 The callback can return 0 or more outputs, all of which must be JAX arrays.
@@ -49,6 +30,7 @@ If the inputs/outputs are placed on GPU(s), the JAX and DALI internal streams
 will be synchronized, there is no need to synchronize the launched JAX functions with the host.
 )code")
     .NumInput(0, 256)
+    .AddArg("function_id", R"code(Id of the python function)code", DALI_INT64)
     .AddOptionalArg("num_outputs", R"code(The number of outputs returned by the `function`.
 
 Function can return no output, in that case the `num_outputs` must be set to 0.
@@ -56,6 +38,7 @@ If the `num_outputs` is 1 (the default), callback should return a single JAX arr
 for `num_outputs` > 1, callback should return a tuple of JAX arrays.
 )code",
                     1)
+    .OutputFn([](const OpSpec &spec) { return spec.GetArgument<int>("num_outputs"); })
     .AddOptionalArg<std::vector<TensorLayout>>("output_layouts",
                                                R"code(The layouts of returned tensors.
 
@@ -69,10 +52,11 @@ If the argument is not specified, the `function` has the same number of inputs a
 the dimensionality of respective inputs and outputs is preserved, the layout will be propagated
 from the input to the output.)code",
                                                nullptr)
-    .NoPrune();
+    .Unserializable()
+    .MakeDocHidden();
 
 
-DALI_REGISTER_OPERATOR(JaxPythonFunctionImpl, JaxPythonFunctionImpl<CPUBackend>, CPU);
-DALI_REGISTER_OPERATOR(JaxPythonFunctionImpl, JaxPythonFunctionImpl<GPUBackend>, GPU);
+DALI_REGISTER_OPERATOR(_JaxFunction, JaxFunction<CPUBackend>, CPU);
+DALI_REGISTER_OPERATOR(_JaxFunction, JaxFunction<GPUBackend>, GPU);
 
 }  // namespace dali
