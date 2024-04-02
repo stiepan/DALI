@@ -87,7 +87,7 @@ def jax_function(
         the dimensionality of respective inputs and outputs is preserved, the layout will be propagated
         from the input to the output.
     sharding: jax.sharding.Sharding, optional
-        The JAX sharding object (either PositionalSharding or NamedSharding). If specified, the
+        The JAX sharding object (either ``PositionalSharding`` or ``NamedSharding``). If specified, the
         ``jax.Arrays`` passed to the ``function`` will be a global ``jax.Array`` aware of the sharding.
 
         .. note::
@@ -112,13 +112,23 @@ def jax_function(
     def decorator(function):
 
         def dali_callback(*args: _DataNode) -> Optional[Tuple[_DataNode, ...]]:
-            return fn._jax_function(
+            is_gpu = device == "gpu" or any(getattr(arg, "device", None) == "gpu" for arg in args)
+            inferred_device = "gpu" if is_gpu else "cpu"
+            actual_callback = _jax_callback_wrapper(function, sharding, inferred_device)
+            jax_fn_outputs = fn._jax_function(
                 *args,
-                function=_jax_callback_wrapper(function, device, sharding),
+                function_id=id(actual_callback),
                 num_outputs=num_outputs,
                 output_layouts=output_layouts,
                 preserve=preserve,
             )
+            # to make sure the `_actual_callback` lives
+            if isinstance(jax_fn_outputs, _DataNode):
+                setattr(jax_fn_outputs, "_actual_callback", actual_callback)
+            else:
+                for jax_fn_output in jax_fn_outputs:
+                    setattr(jax_fn_output, "_actual_callback", actual_callback)
+            return jax_fn_outputs
 
         return dali_callback
 

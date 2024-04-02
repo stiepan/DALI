@@ -17,7 +17,6 @@ import os
 import numpy as np
 
 import jax
-import jax.numpy as jnp
 from nvidia.dali import pipeline_def, fn, types
 import nvidia.dali.plugin.jax as dax
 
@@ -41,6 +40,12 @@ def test_jit_vs_dali_op(device, dtype):
     assert device in ("cpu", "gpu")
     num_iters = 3
 
+    @dax.fn.jax_function(output_layouts="HWC")
+    @jax.jit
+    @jax.vmap
+    def dax_color_twist(img, bcs, hue):
+        return jax_color_twist(img, bcs, hue)
+
     @pipeline_def(batch_size=8, device_id=0, num_threads=4, seed=42)
     def pipeline():
         img, _ = fn.readers.file(name="Reader", file_root=images_dir, random_shuffle=True, seed=42)
@@ -54,9 +59,7 @@ def test_jit_vs_dali_op(device, dtype):
         dali_img = fn.color_twist(img, brightness=bcs[0], contrast=bcs[1], saturation=bcs[2], hue=hue)
         if device == "gpu":
             bcs, hue = bcs.gpu(), hue.gpu()
-        dax_img = dax.fn.jax_python_function(
-            img, bcs, hue, function=jax.jit(jax.vmap(jax_color_twist)), output_layouts="HWC"
-        )
+        dax_img = dax_color_twist(img, bcs, hue)
         return dali_img, dax_img
 
     p = pipeline()
