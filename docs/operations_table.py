@@ -21,6 +21,7 @@ module_mapping = {
 
 no_schema_fns = {
     "nvidia.dali.plugin.jax.fn.jax_function": dax.fn._jax_function_impl._jax_function_desc,
+    "nvidia.dali.fn.cutmix": nvidia.dali.fn._operators._cutmix._cutmix_function_desc,
 }
 
 # Remove ops not available in the fn API

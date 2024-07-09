@@ -18,6 +18,7 @@ from nvidia.dali import backend as _b
 from nvidia.dali import internal as _internal
 from nvidia.dali.external_source import external_source
 from nvidia.dali._utils import dali_trace as _dali_trace
+from ._operators import cutmix
 
 _special_case_mapping = {"b_box": "bbox", "mx_net": "mxnet", "tf_record": "tfrecord"}
 
@@ -155,3 +156,5 @@ def _wrap_op(op_class, submodule, parent_module, wrapper_doc):
 
 external_source._schema_name = "ExternalSource"
 _internal._adjust_operator_module(external_source, sys.modules[__name__], [])
+
+_internal._adjust_operator_module(cutmix, sys.modules[__name__], [])

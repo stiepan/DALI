@@ -45,6 +45,9 @@ void MultiPasteGPU::InitSamples(const Workspace &ws, const TensorListShape<> &ou
       const auto &in_anchor = in_anchors_data_[i][j];
       const auto &out_anchor = out_anchors_data_[i][j];
       const auto &region_shape = region_shapes_data_[i][j];
+      if (volume(region_shape) == 0) {
+        continue;
+      }
       to_vec(sample.inputs[j].size,       region_shape);
       to_vec(sample.inputs[j].in_anchor,  in_anchor);
       to_vec(sample.inputs[j].out_anchor, out_anchor);
