@@ -236,12 +236,13 @@ class VideoTest(unittest.TestCase):
                 [True, False],
                 [1, 2, 3],
                 [2, 3],
+                [None, 42],
             )
         )
     )
 )
 def test_ops_selection_and_mags(case_idx, args):
-    dev, use_sign, n, num_ops = args
+    dev, use_sign, n, num_ops, op_ra_seed = args
     num_magnitude_bins = 9
     # the chisquare expects at least 5 elements in a bin and we can have around
     # (num_ops * (2**use_signs)) ** n ops
@@ -292,7 +293,12 @@ def test_ops_selection_and_mags(case_idx, args):
         if dev == "gpu":
             data = data.gpu()
         data = rand_augment.apply_rand_augment(
-            augmentations, data, n=n, m=m, num_magnitude_bins=num_magnitude_bins
+            augmentations,
+            data,
+            n=n,
+            m=m,
+            num_magnitude_bins=num_magnitude_bins,
+            seed=op_ra_seed,
         )
         return fn.reshape(data, shape=(-1, 2))
 

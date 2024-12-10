@@ -44,11 +44,11 @@ def mag_to_param_with_op_id(op_id):
 
 
 @pipeline_def(enable_conditionals=True, num_threads=4, device_id=0, seed=44)
-def concat_aug_pipeline(dev, policy):
+def concat_aug_pipeline(dev, policy, aa_op_seed):
     data = types.Constant(np.array([], dtype=np.int32), device=dev)
     if dev == "gpu":
         data = data.gpu()
-    data = auto_augment.apply_auto_augment(policy, data)
+    data = auto_augment.apply_auto_augment(policy, data, seed=aa_op_seed)
     return fn.reshape(data, shape=(-1, 2))
 
 
@@ -208,12 +208,12 @@ class VideoTest(unittest.TestCase):
 
 
 @params(
-    (False, "cpu", 256),
-    (False, "gpu", 512),
-    (True, "cpu", 2000),
-    (True, "gpu", 2000),
+    (False, "cpu", 256, None),
+    (False, "gpu", 512, 444),
+    (True, "cpu", 2000, 52),
+    (True, "gpu", 2000, None),
 )
-def test_sub_policy(randomly_negate, dev, batch_size):
+def test_sub_policy(randomly_negate, dev, batch_size, aa_op_seed):
     num_magnitude_bins = 10
 
     @augmentation(
@@ -255,7 +255,7 @@ def test_sub_policy(randomly_negate, dev, batch_size):
     ]
 
     policy = Policy("MyPolicy", num_magnitude_bins=num_magnitude_bins, sub_policies=sub_policies)
-    p = concat_aug_pipeline(batch_size=batch_size, dev=dev, policy=policy)
+    p = concat_aug_pipeline(batch_size=batch_size, dev=dev, policy=policy, aa_op_seed=aa_op_seed)
     p.build()
 
     sub_policy_outputs = collect_sub_policy_outputs(sub_policies, num_magnitude_bins)
@@ -309,8 +309,12 @@ def test_sub_policy(randomly_negate, dev, batch_size):
             assert 0.01 <= stat.pvalue, f"{stat}"
 
 
-@params(("cpu",), ("gpu",))
-def test_op_skipping(dev):
+@params(*[
+    (device, aa_op_seed)
+    for device in ("cpu", "gpu")
+    for aa_op_seed in (None, 101)
+])
+def test_op_skipping(dev, aa_op_seed):
     num_magnitude_bins = 20
     batch_size = 2400
 
@@ -396,7 +400,9 @@ def test_op_skipping(dev):
     )
 
     policy = Policy("MyPolicy", num_magnitude_bins=num_magnitude_bins, sub_policies=sub_policies)
-    p = concat_aug_pipeline(batch_size=batch_size, dev=dev, policy=policy, seed=1234)
+    p = concat_aug_pipeline(
+        batch_size=batch_size, dev=dev, policy=policy, seed=1234, aa_op_seed=aa_op_seed
+    )
     p.build()
 
     for _ in range(5):

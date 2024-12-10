@@ -167,10 +167,11 @@ class VideoTest(unittest.TestCase):
             [True, False],
             [1, 3, 7],
             [2, 3, 7],
+            [None, 5],
         )
     )
 )
-def test_ops_mags_selection(dev, use_sign, num_magnitude_bins, num_ops):
+def test_ops_mags_selection(dev, use_sign, num_magnitude_bins, num_ops, op_ta_seed):
     # the chisquare expects at least 5 elements in a bin and we can have around
     # num_magnitude_bins * num_ops * (2**use_signs)
     batch_size = 2048
@@ -215,7 +216,10 @@ def test_ops_mags_selection(dev, use_sign, num_magnitude_bins, num_ops):
         if dev == "gpu":
             data = data.gpu()
         data = trivial_augment.apply_trivial_augment(
-            augmentations, data, num_magnitude_bins=num_magnitude_bins
+            augmentations,
+            data,
+            num_magnitude_bins=num_magnitude_bins,
+            seed=op_ta_seed,
         )
         return data
 
